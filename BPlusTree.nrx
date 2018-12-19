@@ -1,0 +1,5606 @@
+-- BPlusTree 1.02 - Max Marsiglietti 1998-99
+
+package nrio
+options binary nocrossref
+import nrio.RXFile
+
+numeric digits 32
+
+class BPlusTree
+
+properties private constant -- for cacheLeaf and cacheNode
+ index = int 0
+ entries = int 1
+ data = int 2
+ inuse = int 3
+ age = int 4
+
+properties indirect
+ duplicatesAllowed = Rexx 1
+
+properties private
+ inf = Rexx
+ rBaseName = Rexx ""
+ rNumber = Rexx 0
+ rDbDir = Rexx ""
+ rLength = Rexx 0
+ slash = System.getProperty("file.separator")
+ iLastErr = int 0
+ nodeIdx = RXFile()
+ leafIdx = RXFIle()
+ freeLeaf = Rexx 0
+ freeNode = Rexx 0
+ leafIdxSize = Rexx 0
+ nodeIdxSize = Rexx 0
+ nodeSize = Rexx
+ leafSize = Rexx
+ clSize = 19
+ cnSize = 19
+ cacheLeaf = Rexx[clSize + 1, 5]
+ cacheNode = Rexx[cnSize + 1, 5]
+ root = Rexx[4]
+ leafEntries = Rexx 40
+ dupLeafEntries = Rexx 0
+ nodeEntries = Rexx 40
+ numOfLeaves = Rexx 0
+ numOfNodes = Rexx 0
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Constructor: BPlusTree (Directory, DbName, IndexLength, IndexNumber)
+   ------------
+
+   Purpose:
+   --------
+   Instantiate and initialize the BPlusTree object.
+
+   Parameters:
+   -----------
+   A) Directory: can have, or have not, a final slash
+      (or whatever is the file separator).
+   B) DbName: Database name (WITHOUT file extension).
+   C) IndexLength: Number of chars that an entry occupies.
+   D) IndexNumber: RXDbase assigns to each field a
+      number -- this is that number. This way you can
+      have multiple indexes with the same name
+      (usually not used, but kept for compatibility).
+
+   Returns:
+   --------
+   An object of type nrio.BPlusTree
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method BPlusTree(rBaseDir = Rexx, rBName = Rexx, rLen = Rexx, rNum = Rexx)
+ rBaseName = rBName
+ rNumber = rNum
+ rDbDir = rBaseDir
+ if rDbDir = null then rDbDir = ""
+ rLength = rLen
+
+ if rLength.datatype("W") \= 1 then
+ do
+  resetBPlusTree
+  error(2)
+  return this
+ end
+
+ if rNumber.datatype("W") \= 1 then
+ do
+  resetBPlusTree
+  error(2)
+  return this
+ end
+
+ leafSize = leafEntries * (rLength + 18) + 18
+ dupLeafEntries = (leafSize - 18) % 9
+ nodeSize = nodeEntries * (rLength + 10) + 18
+ 
+ if rDbDir.length > 0 then
+  if rDbDir.right(1) \= slash then
+   rDbDir = rDbDir || slash
+
+ bready = boolean 1
+
+ if nodeIdx.stream(getNodeIdxName, "c", "open") \= "READY:" then
+  bready = 0
+ if bready = 0 then
+ do
+  if nodeIdx.stream(getNodeIdxName, "c", "open read") \= "READY:" then
+   bready = 0
+  else
+   bready = 1
+ end
+
+ if bready = 0 then 
+ do
+  resetBPlusTree
+  error(1)
+  return this
+ end
+
+ if nodeIdxInit \= "READY:" then
+ do
+  resetBPlusTree
+  error(1)
+  return this
+ end
+
+ bready = 1
+
+ if leafIdx.stream(getLeafIdxName, "c", "open") \= "READY:" then
+  bready = 0
+ if bready = 0 then
+ do
+  if leafIdx.stream(getLeafIdxName, "c", "open read") \= "READY:" then
+   bready = 0
+  else
+   bready = 1
+ end
+
+ if bready = 0 then 
+ do
+  resetBPlusTree
+  error(1)
+  return this
+ end
+ if leafIdxInit \= "READY:" then
+ do
+  resetBPlusTree
+  error(1)
+  return this
+ end
+
+ inf = "|".copies(rLength) -- infinite key
+
+ resetCache
+
+ return this
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getNodeIdxName
+   -------
+
+   Purpose:
+   --------
+   Get the node index file name.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   The file name of the node index file, complete with
+   path information.
+
+   Notes:
+   ------
+   The node index file is a file that holds information
+   about non-terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   getLeafIdxName
+*/
+
+method getNodeIdxName public returns Rexx
+ return rDbDir || rBaseName || rNumber.left(4,'_') || '.nix'
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getLeafIdxName
+   -------
+
+   Purpose:
+   --------
+   Get the leaf index file name.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   The file name of the leaf index file, complete with
+   path information.
+
+   Notes:
+   ------
+   The leaf index file is a file that holds information
+   about terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   getNodeIdxName
+*/
+
+method getLeafIdxName public returns Rexx
+ return rDbDir || rBaseName || rNumber.left(4,'_') || '.lix'
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: error
+   -------
+
+   Purpose:
+   --------
+   Return an error code given an integer.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+   A) This method is provided ONLY for private use (eg.
+      inside of this class). If you need to check what
+      was the last issued error, refer to the
+      getStatus method.
+   B) A run-time persistent status is set, retrievable
+      by calling objects using the getStatus method.
+   C) Error codes as of today are the following:
+      READY:                (No error)
+      FILE ACCESS PROBLEMS: (Something at file level)
+      SYNTAX ERROR:         (Wrong parameters?)
+      NO SUCH ITEM:         (can't delete/modify item: doesn't exists)
+      WEIRD ERROR:          (Catch-up for bugs)
+
+   See also:
+   ---------
+   getStatus
+*/
+
+method error(iErrCode = int) private returns Rexx
+ iLastErr = iErrCode
+
+ select
+  when iLastErr = 0 then return "READY:"
+  when iLastErr = 1 then return "FILE ACCESS PROBLEMS:"
+  when iLastErr = 2 then return "SYNTAX ERROR:"
+  when iLastErr = 3 then return "NO SUCH ITEM:"
+  otherwise return "WEIRD ERROR:"
+ end
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getStatus
+   -------
+
+   Purpose:
+   --------
+   Return the last known status of the BPlus
+   Tree (intended as a whole).
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+   Error codes as of today are the following:
+    READY:                (No error)
+    FILE ACCESS PROBLEMS: (Something at file level)
+    SYNTAX ERROR:         (Wrong parameters?)
+    NO SUCH ITEM:         (can't delete/modify item: doesn't exists)
+    WEIRD ERROR:          (Catch-up for bugs)
+
+   See also:
+   ---------
+   error
+*/
+
+method getStatus public returns Rexx
+ return error(iLastErr)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sun 14 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: resetBPlusTree
+   -------
+
+   Purpose:
+   --------
+   reset the BPlus Tree (used in case of errors).
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   
+
+   Notes:
+   ------
+   Among the other things, it closes the file streams.
+
+   See also:
+   ---------
+*/
+
+method resetBPlusTree private
+ rBaseName = ""
+ rNumber = 0
+ rDbDir = ""
+ rLength = 0
+
+ freeLeaf = 0
+ freeNode = 0
+
+ leafSize = 0
+ leafIdxSize = 0
+
+ nodeSize = 0
+ nodeIdxSize = 0
+
+ dupLeafEntries = Rexx 0
+
+ numOfLeaves = 0
+ numOfNodes = 0
+
+ resetCache
+
+ leafIdx.stream(getLeafIdxName, "c", "close")
+ nodeIdx.stream(getLeafIdxName, "c", "close")
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sun 14 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: shutDownBPlusTree
+   -------
+
+   Purpose:
+   --------
+   Finalize the BPlus Tree, closing files and resetting properties.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   an appropriate return code.
+
+
+   Notes:
+   ------
+   Among the other things, it closes the file streams.
+
+   See also:
+   ---------
+*/
+
+method shutDownBPlusTree public returns Rexx
+ errorCondition = Rexx "READY:"
+
+ if leafIdxClose \= "READY:" then
+  errorCondition = error(iLastErr)
+
+ if nodeIdxClose \= "READY:" then
+  errorCondition = error(iLastErr)
+
+ rBaseName = ""
+ rNumber = 0
+ rDbDir = ""
+ rLength = 0
+ freeLeaf = 0
+ freeNode = 0
+ leafSize = 0
+ leafIdxSize = 0
+ nodeSize = 0
+ nodeIdxSize = 0
+ dupLeafEntries = Rexx 0
+ numOfLeaves = 0
+ numOfNodes = 0
+
+ resetCache
+
+ return errorCondition
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: nodeIdxInit
+   -------
+
+   Purpose:
+   --------
+   Initialize the node index.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The node index file is a file that holds information
+   about non-terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   leafIdxInit, nodeIdxClose, leafIdxClose, getStatus
+*/
+
+method nodeIdxInit private returns Rexx
+ if nodeIdx.stream("c", "query size") < (9 + nodeSize) then -- No index or garbled index
+ do
+  nodeIdx.stream("c", "close")
+  nodeIdx.delete(getNodeIdxName)
+
+  bready = boolean 1
+
+  if nodeIdx.stream(getNodeIdxName, "c", "open") \= "READY:" then
+   bready = 0
+  if bready = 0 then
+  do
+   if nodeIdx.stream(getNodeIdxName, "c", "open read") \= "READY:" then
+    bready = 0
+   else
+    bready = 1
+  end
+
+  if bready = 0 then 
+   return error(1)
+
+  freeNode = 0
+  nodeIdxSize = 9 + nodeSize
+  nodeIdx.charout(freeNode.right(9))
+
+  -- Create a new root node.
+  root[data] = newNodeData
+  root[data] = root[data].left(9 + rLength) || "L" || "1".right(9) || -
+               root[data].right(9 + (nodeEntries - 1) * (rLength + 10))
+  root[entries] = 1
+  root[index] = 1
+  if putNode(root) \= "READY:" then
+   return error(1)
+ end
+ else -- We already have a node Index
+ do
+  nodeIdx.stream("c", "seek =1")
+  freeNode = nodeIdx.charin(0, 9).strip
+  if freeNode.datatype("W") \= 1 then
+   return error(1)
+  nodeIdxSize = nodeIdx.stream("c", "query size")
+
+  -- get the root node
+  root[index] = 1
+  if loadNode(root) \= "READY:" then
+   return error(1)
+ end
+
+ numOfNodes = (nodeIdxSize - 9) % nodeSize
+ if numOfNodes.datatype("W") \= 1 then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: leafIdxInit
+   -------
+
+   Purpose:
+   --------
+   Initialize the leaf index.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The leaf index file is a file that holds information
+   about terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   nodeIdxInit, leafIdxClose, nodeIdxClose, getStatus
+*/
+
+method leafIdxInit private returns Rexx
+ if leafIdx.stream("c", "query size") < (9 + leafsize) then -- No index or garbled index
+ do
+  leafIdx.stream("c", "close")
+  leafIdx.delete(getLeafIdxName)
+
+  bready = boolean 1
+
+  if leafIdx.stream(getLeafIdxName, "c", "open") \= "READY:" then
+   bready = 0
+  if bready = 0 then
+  do
+   if leafIdx.stream(getLeafIdxName, "c", "open read") \= "READY:" then
+    bready = 0
+   else
+    bready = 1
+  end
+
+  if bready = 0 then 
+   return error(1)
+
+  freeLeaf = 0
+  leafIdxSize = 9 + leafSize
+  leafIdx.charout(freeLeaf.right(9))
+  cacheLeaf[0, data] = newLeafData
+  cacheLeaf[0, entries] = 0
+  cacheLeaf[0, index] = 1
+  saveLeaf(cacheLeaf[0])
+ end
+ else -- We already have a leaf Index
+ do
+  leafIdx.stream("c", "seek =1")
+  freeLeaf = leafIdx.charin(0, 9).strip
+  if freeLeaf.datatype("W") \= 1 then
+   return error(1)
+  leafIdxSize = leafIdx.stream("c", "query size")
+ end
+
+ numOfLeaves = (LeafIdxSize - 9) % leafSize
+ if numOfLeaves.datatype("W") \= 1 then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: leafIdxClose
+   -------
+
+   Purpose:
+   --------
+   Shut down the leaf index.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The leaf index file is a file that holds information
+   about terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   nodeIdxClose, leafIdxInit, nodeIdxInit, getStatus
+*/
+
+method leafIdxClose private
+ if leafIdx.stream("c", "close") \= "READY:" then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: updateReusableLeaf
+   -------
+
+   Purpose:
+   --------
+   Updates information (on the leaf index file) about
+   the first reusable leaf (empty leaf).
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The leaf index file is a file that holds information
+   about terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   getStatus
+*/
+
+method updateReusableLeaf private
+ leafIdx.stream("c", "seek =1")
+ if leafIdx.charout(freeLeaf.right(9)) \= "READY:" then
+  return error(1)
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 20 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: updateReusableNode
+   -------
+
+   Purpose:
+   --------
+   Updates information (on the node index file) about
+   the first reusable node (empty node).
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The node index file is a file that holds information
+   about non-terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   getStatus
+*/
+
+method updateReusableNode private
+ nodeIdx.stream("c", "seek =1")
+ if nodeIdx.charout(freeNode.right(9)) \= "READY:" then
+  return error(1)
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 13 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: nodeIdxClose
+   -------
+
+   Purpose:
+   --------
+   Shut down the node index.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error code.
+
+   Notes:
+   ------
+   The node index file is a file that holds information
+   about non-terminal nodes in the BPlus Tree.
+
+   See also:
+   ---------
+   leafIdxClose, leafIdxInit, nodeIdxInit, getStatus
+*/
+
+method nodeIdxClose private
+ if nodeIdx.stream("c", "close") \= "READY:" then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sun 14 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: resetCache
+   -------
+
+   Purpose:
+   --------
+   Reset both the node and leaf cache.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+   The cache holds the last accessed data.
+
+   See also:
+   ---------
+*/
+
+method resetCache private
+ cacheLeaf = Rexx[clSize + 1, 5]
+ cacheNode = Rexx[cnSize + 1, 5]
+
+ loop i = 0 to clSize
+  cacheLeaf[i, index] = 0
+  cacheLeaf[i, entries] = 0
+  cacheLeaf[i, data] = ""
+  cacheLeaf[i, inuse] = 0
+  cacheLeaf[i, age] = 0
+ end
+ loop i = 0 to cnSize
+  cacheNode[i, index] = 0
+  cacheNode[i, entries] = 0
+  cacheNode[i, data] = ""
+  cacheNode[i, inuse] = 0
+  cacheNode[i, age] = 0
+ end
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getLeafPosition (index)
+   -------
+
+   Purpose:
+   --------
+   Get the absolute position of a leaf in the leaf file node.
+
+   Parameters:
+   -----------
+   A) index: The number represting the leaf position in the
+             file. The first leaf has index set to 1.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method getLeafPosition(idx = Rexx) private returns Rexx
+ return ((idx - 1) * leafSize + 9) + 1
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: loadLeaf (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get a leaf from the leaf file node.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual leaf 
+            index, total entries (not used), and data.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   saveLeaf, loadDuplicateLeaf
+*/
+
+method loadLeaf(cache = Rexx[]) private returns Rexx
+ if leafIdx.stream("c", "seek =" || getLeafPosition(cache[index])).datatype("W") \= 1 then
+  return error(1)
+ cache[data] = leafIdx.charin(0, leafSize)
+
+ data_found = 0
+ loop label mainloop i = 1 to leafEntries
+  if cache[data].substr(leafSize - 9 - (i * (rLength + 18)) + 1, 1) \= "|" then
+  do
+   data_found = leafEntries + 1 - i -- First non-null record is at entry..
+   leave mainloop -- leave if there's a valid entry.
+  end
+ end
+
+ cache[entries] = data_found
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: saveLeaf (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Put a leaf in the leaf file node.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual leaf 
+            index, total entries (not used), and data.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getLeaf, loadDuplicateLeafData
+*/
+
+method saveLeaf(cache = Rexx[]) private returns Rexx
+ if leafIdx.stream("c", "seek =" || getLeafPosition(cache[index])).datatype("W") \= 1 then
+  return error(1)
+ if leafIdx.charout(cache[data]) \= "READY:" then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: newLeafData
+   -------
+
+   Purpose:
+   --------
+   Create data for a new leaf.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   A Rexx string representing the leaf data.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method newLeafData private returns Rexx
+ return '0'.copies(9) || '|'.copies(leafSize - 18) || '0'.copies(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: loadDuplicateLeaf (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get a duplicate leaf from the leaf file node.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual duplicate
+            leaf index, total entries, and data. The last two
+            parameters become meaningful only on return from this
+            method.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+   A duplicate leaf is a leaf containing references to records in
+   the main archive. Since they all are pointing to records having
+   the same value for the key this index refers to, it is not
+   necessary to store the key value.
+   Therefore the leaf contains (in addition to pointers for the
+   double-linked list) references (9 bytes each) all glued together,
+   like this: <PrevPointer><refer.1><refer.2><...><NextPointer>.
+   At the end of the data in the duplicate leaf, there may be
+   (often there is) some unused space, ranging from 1 to 8 bytes,
+   because the size of the duplicate leaf is the same of that of
+   regular leaves.
+
+   See also:
+   ---------
+   saveLeaf, getLeaf
+*/
+
+method loadDuplicateLeaf(cache = Rexx[]) private returns Rexx
+ offset = Rexx 9 + ((leafSize - 18) // 9)
+
+ if leafIdx.stream("c", "seek =" || getLeafPosition(cache[index])).datatype("W") \= 1 then
+  return error(1)
+ cache[data] = leafIdx.charin(0, leafSize)
+
+ data_found = 0
+ loop label mainloop i = 1 to dupLeafEntries
+  if cache[data].substr(leafSize - offset - (i * 9) + 1, 1) \= "|" then
+  do
+   data_found = dupLeafEntries + 1 - i -- First non-null record is at entry..
+   leave mainloop -- leave if there's a valid entry.
+  end
+ end
+
+ cache[entries] = data_found
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: setNextLeafPointer (Leaf, index)
+   -------
+
+   Purpose:
+   --------
+   Set the pointer to the next leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual duplicate
+            leaf index, total entries, and data.
+   B) index: Pointer to the next leaf.
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   setPreviousLeafPointer, getPreviousLeafPointer, getNextLeafPointer
+*/
+
+method setNextLeafPointer(cache = Rexx[], idx = Rexx) private
+ cache[data] = cache[data].left(cache[data].length - 9) || idx.right(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: setPreviousLeafPointer (Leaf, index)
+   -------
+
+   Purpose:
+   --------
+   Set the pointer to the previous leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual duplicate
+            leaf index, total entries, and data.
+   B) index: Pointer to the previous leaf.
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   setNextLeafPointer, getNextLeafPointer, getPreviousLeafPointer
+*/
+
+method setPreviousLeafPointer(cache = Rexx[], idx = Rexx) private
+ cache[data] = idx.right(9) || cache[data].right(cache[data].length - 9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getNextLeafPointer (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get the pointer to the next leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual duplicate
+            leaf index, total entries, and data.
+
+   Returns:
+   --------
+   A pointer to the next leaf
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getPreviousLeafPointer, setNextLeafPointer, setPreviousLeafPointer
+*/
+
+method getNextLeafPointer(cache = Rexx[]) private returns Rexx
+ return cache[data].right(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getPreviousLeafPointer (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get the pointer to the previous leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual duplicate
+            leaf index, total entries, and data.
+
+   Returns:
+   --------
+   A pointer to the previous leaf
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getNextLeafPointer
+*/
+
+method getPreviousLeafPointer(cache = Rexx[]) private returns Rexx
+ return cache[data].left(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: addLeafItem (Leaf, item, index)
+   -------
+
+   Purpose:
+   --------
+   Add a key to a leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual
+            leaf index, total entries, and data.
+   B) Item: a key.
+   C) Index: a pointer (for the current item) to the main archive.
+
+   Returns:
+   --------
+   If a file error occurs, an appropriate error message is returned;
+   otherwise:
+      '0' means no update of leaf to disk is necessary.
+      '1' means that you must store the leaf to disk (since contents
+          changed).
+
+   Notes:
+   ------
+   The leaf is not actually stored on disk by this method.
+   An item, in the leaf, is represented this way: 
+   <key value><db pointer><dup key pointer>
+
+   See also:
+   ---------
+   delLeafItem
+*/
+
+method addLeafItem(cache = Rexx[], item = Rexx, idx = Rexx) private returns Rexx
+ prevP = Rexx getPreviousLeafPointer(cache)
+ nextP = Rexx getNextLeafPointer(cache)
+ totentries = cache[entries]
+ table = Rexx[totentries + 1]
+ tdata = Rexx
+ tother = Rexx
+ tLeaf = Rexx[]
+
+ item = item.right(rLength)
+
+ if totentries > 0 then
+ do
+  loop i = 0 to (totentries - 1) -- look for duplicate keys
+   tdata = cache[data].substr(10 + i * (18 + rLength), rLength)
+   if tdata = item then -- We already have an entry with this key
+   do
+    tother = cache[data].substr(i * (18 + rLength) + 19 + rLength, 9).strip
+    if tother \= "|||||||||" then -- a DupKey leaf already exists
+    do
+     if pushDuplicateKey(tother, idx) \= "READY:" then
+      return error(1)
+     else
+      return 0
+    end
+    else -- we must create a new DupKey leaf for this item
+    do
+     if freeLeaf \= 0 then -- we can reuse an empty leaf
+     do
+      tLeaf = getDuplicateLeaf(freeLeaf)
+
+      -- Update cache[data] with the DupKey for item (null, right now).
+      cache[data] = cache[data].left(9 + i * (rLength + 18)) || -
+                    cache[data].substr(10 + i * (rLength + 18), rLength + 9) || -
+                    freeLeaf.right(9) || -
+                    cache[data].right(leafSize - 9 - (i + 1) * (rLength + 18))
+
+      -- update freeLeaf information on disk.
+      freeLeaf = getNextLeafPointer(tLeaf)
+      if updateReusableLeaf \= "READY:" then
+       return error(1)
+      cache[inuse] = 1
+      setNextLeafPointer(tLeaf, 0)
+      saveLeaf(tLeaf)
+      if pushDuplicateKey(tLeaf[index], idx) \= "READY:" then
+      do
+       cache[inuse] = 0
+       return error(1)
+      end
+      cache[inuse] = 0
+      return 1 -- item didn't have duplicate keys until now.
+     end
+     else -- we must create a new leaf
+     do
+      cache[inuse] = 1
+
+      loop label innerloop ii = 0 to clSize
+       if  cacheLeaf[ii, inuse] = 0 then
+        leave innerloop
+      end
+
+      if ii > clSize then ii = clSize
+      tLeaf = cacheLeaf[ii]
+      tLeaf[age] = 1
+
+      tLeaf[entries] = 0
+      tLeaf[index] = (leafIdxSize - 9) % leafSize + 1
+      leafIdxSize = leafIdxSize + leafSize
+      tLeaf[data] = newLeafData
+      saveLeaf(tLeaf) 
+
+      -- Update cache[data] with the DupKey for item (null, right now).
+      cache[data] = cache[data].left(9 + i * (rLength + 18)) || -
+                    cache[data].substr(10 + i * (rLength + 18), rLength + 9) || -
+                    tLeaf[index].right(9) || -
+                    cache[data].right(leafSize - 9 - (i + 1) * (rLength + 18))
+
+      if pushDuplicateKey(tLeaf[index], idx) \= "READY:" then
+      do
+       cache[inuse] = 0
+       return error(1)
+      end
+
+      cache[inuse] = 0
+      return 1 -- item non aveva duplicati finora
+     end
+    end
+   end
+  end
+
+  cache[data] = cache[data].substr(10, leafSize - 18)
+  ii = 0
+  loop i = 0 to totentries
+   if ii < totentries then
+   do
+    tdata = cache[data].substr(ii * (18 + rLength) + 1, rLength)
+    tother = cache[data].substr(ii * (18 + rLength) + 1 + rLength, 18)
+   end
+   else
+   do
+    tdata = item
+    tother = idx.right(9) || '|||||||||'
+   end
+
+   if tdata <= item then
+   do
+    table[i] = tdata || tother
+    ii = ii + 1
+   end
+   else
+   do
+    table[i] = item || idx.right(9) || '|||||||||'
+    item = cache[data].substr((totentries - 1) * (18 + rLength) + 1, rLength)
+   end
+  end
+ end
+ else
+  table[0] = item || idx.right(9) || '|||||||||'
+
+ cache[data] = ""
+
+ loop i = 0 to totentries
+  cache[data] = cache[data] || table[i]
+ end
+
+ if totentries < (leafEntries - 1) then
+  cache[data] = cache[data] || '|'.copies((leafEntries - 1 - totentries) * (rLength + 18))
+
+ cache[data] = prevP.right(9) || cache[data] || nextP.right(9)
+ cache[entries] = cache[entries] + 1
+ return 1
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: delLeafItem (Leaf, item, index)
+   -------
+
+   Purpose:
+   --------
+   Remove a key from a leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A three-strings Rexx array with the actual
+            leaf index, total entries, and data.
+   B) Item: key value.
+   C) Index: a pointer (for the item to be removed) to the main archive.
+
+   Returns:
+   --------
+   If a file error occurs, an appropriate error message is returned;
+   otherwise:
+      '0' means no update of leaf to disk is necessary.
+      '1' means that you must store the leaf to disk (since contents
+          changed).
+
+   Notes:
+   ------
+   An item, in the leaf, is represented this way: 
+   <key value><db pointer><dup key pointer>
+
+   See also:
+   ---------
+   addLeafItem
+*/
+
+method delLeafItem(cache = Rexx[], item = Rexx, idx = Rexx) private returns Rexx
+ prevP = Rexx getPreviousLeafPointer(cache)
+ nextP = Rexx getNextLeafPointer(cache)
+ totentries = cache[entries]
+ table = Rexx[totentries + 1]
+ tot = Rexx 0
+ tdata = Rexx
+ tother = Rexx
+ temp = Rexx
+ key = Rexx
+ ret = Rexx 0
+
+ item = item.strip
+ cache[data] = cache[data].substr(10, leafSize - 18)
+
+ loop i = 0 to (totentries - 1)
+  tdata = cache[data].substr(i * (18 + rLength) + 1, rLength)
+  tother = cache[data].substr(i * (18 + rLength) + 1 + rLength, 18)
+  if tdata.strip \= item then -- This is not the one to be deleted.
+  do
+   table[tot] = tdata || tother
+   tot = tot + 1
+  end
+  else -- found the item to be deleted.
+  do
+   if tother.left(9) = idx then -- must cut *this* one.
+   do
+    ret = 1
+    if tother.right(9) \= "|||||||||" then -- there are duplicates.
+    do
+     cache[inuse] = 1
+     parse popLastKey(tother.right(9)) key "|" temp
+     if temp \= "LAST" then
+     do
+      tother = key || tother.right(9)
+     end
+     else
+     do
+      tother = key || "|||||||||"
+     end
+     table[tot] = tdata || tother
+     tot = tot + 1
+    end
+   end
+   else -- the idx to delete is in the duplicates.
+   do
+    cache[inuse] = 1
+    if popDuplicateKey(tother.right(9), idx) = "LAST" then
+    do
+     tother = tother.left(9) || "|||||||||"
+     ret = 1
+    end
+    table[tot] = tdata || tother
+    tot = tot + 1
+   end
+  end
+ end
+
+ cache[data] = ""
+
+ loop i = 0 to (tot - 1)
+  cache[data] = cache[data] || table[i]
+ end
+ if tot < totentries then
+  cache[entries] = cache[entries] - 1
+
+ if cache[entries] < leafEntries then
+  cache[data] = cache[data] || '|'.copies((rLength + 18) * (leafEntries - cache[entries]))
+
+ cache[data] = prevP.right(9) || cache[data] || nextP.right(9)
+ cache[inuse] = 0
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: pushDuplicateKey (Leaf, index)
+   -------
+
+   Purpose:
+   --------
+   Insert a duplicate key into a leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A pointer to a leaf.
+   C) Index: a pointer (for the item to be inserted) to the main archive.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   popDuplicateKey
+*/
+
+method pushDuplicateKey(leaf = Rexx, idx = Rexx) private returns Rexx
+ tLeaf = Rexx[] -- tempinuse
+ tLeaf2 = Rexx[] -- ii
+ ii = int
+ tempNextPointer = Rexx "000000000"
+
+ leaf = leaf.strip
+ idx = idx.strip
+
+ tLeaf = getDuplicateLeaf(leaf)
+ tempNextPointer = tLeaf[index]
+
+ -- If the leaf is full, go for the next one ad libitum.
+ loop while tLeaf[entries] = dupLeafEntries & getNextLeafPointer(tLeaf) \= 0
+  leaf = getNextLeafPointer(tLeaf)
+  tLeaf = getDuplicateLeaf(leaf)
+  tempNextPointer = tLeaf[index]
+ end
+
+ tLeaf[inuse] = 1
+
+ -- Now, the leaf can be full and not pointing to another, or partially filled.
+ if tLeaf[entries] = dupLeafEntries then -- Leaf is full
+ do
+  if freeLeaf \= 0 then -- we can reuse an empty leaf
+  do
+   tLeaf2 = getDuplicateLeaf(freeLeaf)
+
+   -- modify the leaf (it's empty) and put it on disk.
+   tLeaf2[data] = '0'.copies(9) || idx.right(9) || - 
+                  tLeaf2[data].right(leafSize - 18)
+   freeLeaf = getNextLeafPointer(tLeaf2)
+   if updateReusableLeaf \= "READY:" then
+    return error(1)
+   tLeaf2[entries] = 1     
+   setPreviousLeafPointer(tLeaf2, tempNextPointer)
+   setNextLeafPointer(tLeaf2, 0)
+   setNextLeafPointer(tLeaf, tLeaf2[index])
+   saveLeaf(tLeaf)
+   saveLeaf(tLeaf2)
+  end
+  else -- we must create a new leaf
+  do
+   loop label innerloop ii = 0 to clSize
+    if \cacheLeaf[ii, inuse] then
+     leave innerloop
+   end
+
+   if ii > clSize then ii = clSize
+   tLeaf2 = cacheLeaf[ii]
+   tLeaf2[age] = 1
+   tLeaf2[entries] = 1
+   tLeaf2[index] = (leafIdxSize - 9) % leafSize + 1
+   leafIdxSize = leafIdxSize + leafSize
+   tLeaf2[data] = newLeafData
+   tLeaf2[data] = tLeaf2[data].left(9) || idx.right(9) || - 
+                  tLeaf2[data].right(leafSize - 18)
+   setPreviousLeafPointer(tLeaf2, tempNextPointer)
+   setNextLeafPointer(tLeaf, tLeaf2[index])
+   setNextLeafPointer(tLeaf2, 0)
+   saveLeaf(tLeaf)
+   saveLeaf(tLeaf2) 
+  end
+ end
+ else -- leaf is only partially filled
+ do
+  tLeaf[data] = tLeaf[data].left(9 + tLeaf[entries] * 9) -
+                               || idx.right(9) || - 
+  tLeaf[data].right(leafSize - 18 - tLeaf[entries] * 9)
+  tLeaf[entries] = tLeaf[entries] + 1
+  saveLeaf(tLeaf)
+ end
+
+ tLeaf[inuse] = 0
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: popDuplicateKey (Leaf, index)
+   -------
+
+   Purpose:
+   --------
+   Deletes a duplicate key from a leaf.
+
+   Parameters:
+   -----------
+   A) Leaf: A pointer to a leaf.
+   C) Index: a pointer (for the item to be removed) to the main archive.
+
+   Returns:
+   --------
+   'LAST'    if the item was the only one in the whole dup leaf branch for
+             the key,
+   'NOTLAST' otherwise.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   pushDuplicateKey
+*/
+
+method popDuplicateKey(leaf = Rexx, idx = Rexx) private returns Rexx
+ i = int
+ found = Rexx
+ tLeaf = Rexx[]
+ bIdxFound = boolean 0
+ info = Rexx
+ leafnum = int 0
+
+ -- look for idx starting from leaf 'leaf'.
+ loop label mainloop until bIdxFound | leaf = 0
+  leafnum = leafnum + 1
+  tLeaf = getDuplicateLeaf(leaf)
+ 
+  -- Look for the wanted index in this leaf
+  loop label innerloop i = 0 to tLeaf[entries] - 1
+   if tLeaf[data].substr(10 + i * 9, 9) = idx then
+   do
+    bIdxFound = 1
+    found = i + 1
+    leave innerloop
+   end
+  end
+
+  if \bIdxFound then
+   leaf = getNextLeafPointer(tLeaf)
+  else
+   leave mainloop
+ end -- loop until bIdxFound
+
+ if leaf \= 0 then
+ do
+  tLeaf[inuse] = 1
+  if found = tLeaf[entries] & getNextLeafPointer(tLeaf) = 0 then -- It's the last one
+  do
+   popLastKey(leaf)
+   tLeaf[inuse] = 0
+   if leafnum = 1 & tLeaf[entries] = 0 then return "LAST"
+   else return "NOTLAST"
+  end
+  else
+  do
+   parse popLastKey(leaf) info "|" .
+   tLeaf[data] = tLeaf[data].left(9 + (found - 1) * 9) || -
+                 info.right(9) || - 
+                 tLeaf[data].right(leafSize - 18 - (found - 1) * 9)
+   saveLeaf(tLeaf)
+  end
+  tLeaf[inuse] = 0
+ end
+
+ return "NOTLAST"
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 16 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: popLastKey (Leaf)
+   -------
+
+   Purpose:
+   --------
+   Deletes the last duplicate key from this tree branch.
+
+   Parameters:
+   -----------
+   A) Leaf: A pointer to a leaf.
+
+   Returns:
+   --------
+   The key that's been deleted.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method popLastKey(leaf = Rexx) private returns Rexx
+ key = Rexx
+ tLeaf = Rexx[]
+ bIdxFound = boolean 0
+ bNoMoreKeys = boolean 1
+
+ loop label mainloop until bIdxFound
+  tLeaf = getDuplicateLeaf(leaf)
+
+  if getNextLeafPointer(tLeaf) = 0 then
+   bIdxFound = 1
+  else
+  do
+   leaf = getNextLeafPointer(tLeaf)
+   bNoMoreKeys = 0
+  end
+ end
+
+ -- Take away the last key.
+ key =  tLeaf[data].substr(10 + (tLeaf[entries] - 1) * 9, 9)
+ tLeaf[data] = tLeaf[data].left(9 + (tLeaf[entries] - 1) * 9) -
+               || '|'.copies(9) || -
+               tLeaf[data].right(leafSize - 9 - tLeaf[entries] * 9)
+ tLeaf[entries] = tLeaf[entries] - 1
+
+ -- Was it the only key?
+ if tLeaf[entries] \= 0 then -- No, just save back this leaf.
+ do
+   saveLeaf(tLeaf)
+   bNoMoreKeys = 0
+ end
+ else -- yes, insert this leaf in the reusable leaves pool.
+ do
+  setNextLeafPointer(tLeaf, freeLeaf.right(9))
+  leaf = getPreviousLeafPointer(tLeaf)
+  setPreviousLeafPointer(tLeaf, 0)
+  saveLeaf(tLeaf)
+  freeLeaf = tLeaf[index]
+  updateReusableLeaf
+
+  if leaf \= 0 then
+  do
+   -- Get previous leaf, update its next leaf pointer, and save it.
+   tLeaf = getDuplicateLeaf(leaf)
+   setNextLeafPointer(tLeaf, 0)
+   saveLeaf(tLeaf)
+  end
+ end
+
+ if bNoMoreKeys = 1 then
+  key = key || "|" || "LAST"
+ else
+  key = key || "|" || "NOTLAST"
+
+ return key
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 19 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: splitLeaf(Leaf)
+   -------
+
+   Purpose:
+   --------
+   split a leaf in two -- creating a new leaf
+   and putting in it half of the items currently
+   in the old one.
+
+   Parameters:
+   -----------
+   A) Leaf: a pointer to the leaf to be splitted.
+
+   Returns:
+   --------
+   A Rexx string composed like this:
+   oldleaf_pointer|oldleaf_maxitem|newleaf_pointer|newleaf_maxitem
+
+   Notes:
+   ------
+   A new leaf is always created (no joining with other leaves).
+   The new leaf is always getting the last half of the items
+   (the ones with the higher key values, eg M-Z in an A-Z range).
+   The leaves are actually stored on disk.
+   Next and Previous pointers for both new and old leaf are correctly
+   set to their new values.
+   The reference pointing to the old leaf is, on return, still
+   containing the old leaf (although it now has less items in it).
+
+   See also:
+   ---------
+*/
+
+method splitLeaf(cache = Rexx[]) private returns Rexx
+ tLeaf = Rexx[]
+ nlp = Rexx
+ nli = Rexx
+ i = int
+ ii = int
+ full = Rexx
+ half = Rexx
+ tempData = Rexx
+ dataStart = Rexx
+
+ -- We need a new leaf for the split.
+ if freeLeaf \= 0 then -- we can reuse an empty leaf
+ do
+  tLeaf = getLeaf(freeLeaf)
+
+  -- Don't forget to update the free leaves pool
+  -- update freeLeaf information on disk.
+  freeLeaf = getNextLeafPointer(tLeaf)
+  if updateReusableLeaf \= "READY:" then
+   return error(1)
+ end
+ else -- we must create a new leaf
+ do
+  loop label innerloop ii = 0 to clSize
+   if \cacheLeaf[ii, inuse] then
+    leave innerloop
+  end
+
+  if ii > clSize then ii = clSize
+  tLeaf = cacheLeaf[ii]
+  tLeaf[age] = 1
+
+  tLeaf[index] = (leafIdxSize - 9) % leafSize + 1
+  leafIdxSize = leafIdxSize + leafSize
+  tLeaf[entries] = 0
+ end
+
+ nlp = tLeaf[index]
+
+ -- Remove half of the entries in cache[] and put them in cacheLeaf[ii]
+ half = cache[entries] % 2
+ full = cache[entries]
+ tempData = ""
+
+ loop i = half to full
+  dataStart = 10 + (i - 1) * (rLength + 18)
+  tempData = tempData || cache[data].substr(dataStart, rLength + 18)
+  cache[data] = cache[data].left(dataStart - 1) || "|".copies(rLength + 18) || -
+                cache[data].right(leafSize - dataStart - rLength - 17)
+  cache[entries] = cache[entries] - 1
+  tLeaf[entries] = tLeaf[entries] + 1
+ end
+ tempData = tempData || "|".copies((leafEntries - tLeaf[entries]) * (rLength + 18))
+ tempData = "0".copies(9) || tempData || "0".copies(9)
+ tLeaf[data] = tempData
+
+ -- update leaves pointers.
+ setPreviousLeafPointer(tLeaf, cache[index])
+ setNextLeafPointer(tLeaf, getNextLeafPointer(cache))
+ setNextLeafPointer(cache, tLeaf[index])
+
+ -- store leaves on disk.
+ saveLeaf(cache)
+ saveLeaf(tLeaf)
+
+ nli = tLeaf[data].substr(10 + (tLeaf[entries] - 1) * (rLength + 18), rLength)
+
+ -- Update the previous pointer for the next leaf originally
+ -- pointed by the old leaf.
+ tempData = getNextLeafPointer(tLeaf)
+ if tempData \= 0 then
+ do
+  tLeaf = getLeaf(tempData)
+  setPreviousLeafPointer(tLeaf, getNextLeafPointer(cache))
+  saveLeaf(tLeaf)
+ end
+
+ -- return old_index|old_maxitem|new_index|new_maxitem
+ tempData = cache[index].right(9) || "|" || -
+            cache[data].substr(10 + (cache[entries] - 1) * (rLength + 18), rLength) || "|" || -
+            nlp.right(9) || "|" || nli
+
+ return tempData
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 19 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getLeafItem(Leaf, item)
+   -------
+
+   Purpose:
+   --------
+   Get all of the indexes of the items whose value is
+   equal to 'item', including ones from duplicate
+   leaves.
+
+   Parameters:
+   -----------
+   A) Leaf: a pointer to the leaf.
+   B) Item: the value of the item to be searched.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   Duplicate leaves, if present, are browsed as well as
+   the leaf passed as the parameter.
+
+   See also:
+   ---------
+   isItemInLeaf
+*/
+
+method getLeafItem(cache = Rexx[], item = Rexx) private returns Rexx
+ ret = Rexx 0 -- Stores the items found.
+ i = int
+ dupleaf = Rexx
+ found = int 0
+
+ item = item.right(rLength)
+ loop i = 1 to cache[entries] -- look for item
+  if cache[data].substr(10 + (rLength + 18) * (i - 1), rLength) = item then
+   found = i
+ end
+
+ if found = 0 then -- no item found.
+  return ret
+ else -- get all of the items (including ones in dupl. leaves)
+ do
+  ret[0] = 1 -- Start including the item in this regular leaf.
+  ret[1] = cache[data].substr(10 + (rLength + 18) * (found - 1) + rLength, 9)
+  dupleaf = cache[data].substr(10 + (rLength + 18) * (found - 1) + rLength + 9, 9).strip
+  if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+   getDuplicates(dupleaf, ret)
+ end
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 19 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: isItemInLeaf(Leaf, item)
+   -------
+
+   Purpose:
+   --------
+   Peeks the leaf, asking if a given item
+   is present.
+
+   Parameters:
+   -----------
+   A) Leaf: a pointer to the leaf.
+   B) Item: the value of the item to be searched.
+
+   Returns:
+   --------
+   0, if the item is not present, or the index
+   (in the leaf) if it is present.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getLeafItem, gteItemInLeaf
+*/
+
+method isItemInLeaf(cache = Rexx[], item = Rexx) private returns Rexx
+ i = int
+ found = int 0
+
+ loop i = 1 to cache[entries] -- look for item
+  if cache[data].substr(10 + (rLength + 18) * (i - 1), rLength) = item then
+   found = i
+ end
+
+ return found
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: gteItemInLeaf(Leaf, item)
+   -------
+
+   Purpose:
+   --------
+   Peeks the leaf, returning the first item
+   which is equal, or bigger than, the given
+   item.
+
+   Parameters:
+   -----------
+   A) Leaf: a pointer to the leaf.
+   B) Item: the value of the item to be searched.
+
+   Returns:
+   --------
+   The index (in the leaf) of the item.
+
+   Notes:
+   ------
+   To find which leaf contains the .gte. item,
+   use findLeafFitting.
+
+   See also:
+   ---------
+   getLeafItem, isItemInLeaf
+*/
+
+method gteItemInLeaf(cache = Rexx[], item = Rexx) private returns Rexx
+ i = int
+ found = int 0
+
+ loop label mainloop i = 1 to cache[entries] -- look for item
+  if cache[data].substr(10 + (rLength + 18) * (i - 1), rLength) >= item then
+  do
+   found = i
+   leave mainloop
+  end
+ end
+
+ return found
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 19 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getDuplicates(Leaf, array)
+   -------
+
+   Purpose:
+   --------
+   Get all of the database references in
+   the given duplicate leaf, extending the
+   operation to other sister leaves if
+   present.
+
+   Parameters:
+   -----------
+   A) Leaf: a pointer to the leaf.
+   B) Array: the array where to store the references.
+
+   Returns:
+   --------
+   An appropriate error.
+   'array' is visible also from the caller, after this
+   method has done (and during, also).
+   Array is built this way: the [0] element is the number
+   of the elements found, while the [n] elements have in
+   them the database references.
+
+   Notes:
+   ------
+   Duplicate leaves, if present, are browsed as well as
+   the leaf passed as the parameter.
+
+   See also:
+   ---------
+*/
+
+method getDuplicates(leaf = Rexx, array = Rexx) private returns Rexx
+ i = int
+ tLeaf = Rexx[]
+ bIdxFound = boolean 0
+
+ loop label mainloop until bIdxFound -- Get all the dupl. leaves up to the last.
+  tLeaf = getDuplicateLeaf(leaf)
+
+  if getNextLeafPointer(tLeaf) = 0 then
+   bIdxFound = 1 -- this was the last leaf of the pack.
+  else
+   leaf = getNextLeafPointer(tLeaf)
+
+  -- Add all of the keys found here to 'array'
+  loop i = 1 to tLeaf[entries]
+   array[0] = array[0] + 1
+   array[array[0]] = tLeaf[data].substr(10 + (i - 1) * 9, 9)
+  end
+ end
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getNodePosition (index)
+   -------
+
+   Purpose:
+   --------
+   Get the absolute position of a node in the leaf file node.
+
+   Parameters:
+   -----------
+   A) index: The number represting the node position in the
+             file. The first node has index set to 1.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method getNodePosition(idx = Rexx) private returns Rexx
+ return ((idx - 1) * nodeSize + 9) + 1
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: loadNode (Node)
+   -------
+
+   Purpose:
+   --------
+   Get a node from the node file.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual node 
+            index, total entries (not used), and data.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   putNode
+*/
+
+method loadNode(cache = Rexx[]) private returns Rexx
+ leaftype = Rexx
+ if nodeIdx.stream("c", "seek =" || getNodePosition(cache[index])).datatype("W") \= 1 then
+  return error(1)
+ cache[data] = nodeIdx.charin(0, nodeSize)
+
+ data_found = 0
+ loop label mainloop i = 1 to nodeEntries
+  leaftype = cache[data].substr(nodeSize - 9 - ((i - 1) * (rLength + 10) + 10) + 1, 1)
+  if leaftype = "L" | leaftype = "N" then
+  do
+   data_found = nodeEntries + 1 - i -- First non-null record is at entry..
+   leave mainloop -- leave if there's a valid entry.
+  end
+ end
+
+ cache[entries] = data_found
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: putNode (Node)
+   -------
+
+   Purpose:
+   --------
+   Put a node in the node file.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual node
+            index, total entries (not used), and data.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getNode
+*/
+
+method putNode(cache = Rexx[]) private returns Rexx
+ if nodeIdx.stream("c", "seek =" || getNodePosition(cache[index])).datatype("W") \= 1 then
+  return error(1)
+ if nodeIdx.charout(cache[data]) \= "READY:" then
+  return error(1)
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: newNodeData
+   -------
+
+   Purpose:
+   --------
+   Create data for a new node.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   A Rexx string representing the node data.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method newNodeData private returns Rexx
+ return '0'.copies(9) || '|'.copies(nodeSize - 18) || '0'.copies(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: setNextNodePointer (Node, index)
+   -------
+
+   Purpose:
+   --------
+   Set the pointer to the next node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+   B) index: Pointer to the next node.
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   setPreviousNodePointer, getPreviousNodePointer, getNextNodePointer
+*/
+
+method setNextNodePointer(cache = Rexx[], idx = Rexx) private
+ cache[data] = cache[data].left(cache[data].length - 9) || idx.right(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: setPreviousNodePointer (Node, index)
+   -------
+
+   Purpose:
+   --------
+   Set the pointer to the previous node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+   B) index: Pointer to the previous node.
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   setNextNodePointer, getNextNodePointer, getPreviousNodePointer
+*/
+
+method setPreviousNodePointer(cache = Rexx[], idx = Rexx) private
+ cache[data] = idx.right(9) || cache[data].right(cache[data].length - 9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getNextNodePointer (Node)
+   -------
+
+   Purpose:
+   --------
+   Get the pointer to the next node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+
+   Returns:
+   --------
+   A pointer to the next node
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getPreviousNodePointer, setNextNodePointer, setPreviousNodePointer
+*/
+
+method getNextNodePointer(cache = Rexx[]) private returns Rexx
+ return cache[data].right(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getPreviousNodePointer (Node)
+   -------
+
+   Purpose:
+   --------
+   Get the pointer to the previous node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+
+   Returns:
+   --------
+   A pointer to the previous node
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   getNextNodePointer
+*/
+
+method getPreviousNodePointer(cache = Rexx[]) private returns Rexx
+ return cache[data].left(9)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 23 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: addNodeItem (Node, item, idx)
+   -------
+
+   Purpose:
+   --------
+   Add a key to a node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+   B) Item: a key.
+   C) Idx: an index, pointing to a node or a leaf.
+
+   Returns:
+   --------
+   An appropriate error message is returned.
+
+   Notes:
+   ------
+   The node is not actually stored on disk by this method.
+   An item, in the node, is represented this way: 
+   <key value><pointer to a node/leaf>
+   The pointer to a node/leaf is a 10 letters word, where the
+   first letter can be N to indicate that the item being pointed is
+   a Node, or it can be L (the item being pointed is a Leaf), while
+   the remaining 9 chars represent the actual pointer (a number).
+
+   See also:
+   ---------
+*/
+
+method addNodeItem(cache = Rexx[], item = Rexx, idx = Rexx) private returns Rexx
+ prevP = Rexx getPreviousNodePointer(cache)
+ nextP = Rexx getNextNodePointer(cache)
+ totentries = cache[entries]
+ table = Rexx[totentries + 1]
+ tdata = Rexx
+ tother = Rexx
+
+ item = item.right(rLength)
+ cache[data] = cache[data].substr(10, nodeSize - 18)
+
+ if item = inf then -- We're adding the infinite key
+ do
+  loop i = 0 to (totentries - 1) -- copy all of the old entries
+   tdata = cache[data].substr(i * (10 + rLength) + 1, rLength)
+   tother = cache[data].substr(i * (10 + rLength) + 1 + rLength, 10)
+
+   table[i] = tdata || tother
+  end
+
+  -- Now add the infinite key
+  table[totentries] = inf || idx.right(10)
+ end
+ else 
+ do
+  if totentries > 0 then
+  do
+   ii = 0
+   loop i = 0 to totentries
+    if ii < totentries then
+    do
+     tdata = cache[data].substr(ii * (10 + rLength) + 1, rLength)
+     tother = cache[data].substr(ii * (10 + rLength) + 1 + rLength, 10)
+    end
+    else
+    do
+     tdata = item
+     tother = idx.right(10)
+    end
+
+    if tdata <= item then
+    do
+     table[i] = tdata || tother
+     ii = ii + 1
+    end
+    else
+    do
+     table[i] = item || idx.right(10)
+     item = cache[data].substr((totentries - 1) * (10 + rLength) + 1, rLength)
+    end
+   end
+
+   -- Code that deals with the 'INFINITE' key.
+   tdata = table[totentries - 1].left(rLength)
+   if tdata = inf then -- we have the infinite key in the wrong position
+   do -- swap the last two entries
+    tdata = table[totentries - 1]
+    table[totentries  - 1] = table[totentries]
+    table[totentries] = tdata
+   end
+  end
+  else
+   table[0] = item || idx.right(10)
+ end
+
+ cache[data] = ""
+
+ loop i = 0 to totentries
+  cache[data] = cache[data] || table[i]
+ end
+
+ if totentries < (nodeEntries - 1) then
+  cache[data] = cache[data] || '|'.copies((nodeEntries - 1 - totentries) * (rLength + 10))
+
+ cache[data] = prevP.right(9) || cache[data] || nextP.right(9)
+ cache[entries] = cache[entries] + 1
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 22 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: delNodeItem (Node, item)
+   -------
+
+   Purpose:
+   --------
+   Remove a key from a node.
+
+   Parameters:
+   -----------
+   A) Node: A three-strings Rexx array with the actual
+            node index, total entries, and data.
+   B) Item: key value.
+
+   Returns:
+   --------
+   An appropriate error message is returned.
+
+   Notes:
+   ------
+   The node is not actually stored on disk by this method.
+   An item, in the node, is represented this way: 
+   <key value><pointer to a node/leaf>
+   The pointer to a node/leaf is a 10 letters word, where the
+   first letter can be N to indicate that the item being pointed is
+   a Node, or it can be L (the item being pointed is a Leaf), while
+   the remaining 9 chars represent the actual pointer (a number).
+
+   See also:
+   ---------
+*/
+
+method delNodeItem(cache = Rexx[], item = Rexx) private returns Rexx
+ prevP = Rexx getPreviousNodePointer(cache)
+ nextP = Rexx getNextNodePointer(cache)
+ totentries = cache[entries]
+ table = Rexx[totentries + 1]
+ tot = Rexx 0
+ tdata = Rexx
+ tother = Rexx
+
+ item = item.strip
+ cache[data] = cache[data].substr(10, nodeSize - 18)
+
+ loop i = 0 to (totentries - 1)
+  tdata = cache[data].substr(i * (10 + rLength) + 1, rLength)
+  tother = cache[data].substr(i * (10 + rLength) + 1 + rLength, 10)
+  if tdata.strip \= item then -- This is not the one to be deleted.
+  do
+   table[tot] = tdata || tother
+   tot = tot + 1
+  end
+ end
+
+ cache[data] = ""
+
+ loop i = 0 to (tot - 1)
+  cache[data] = cache[data] || table[i]
+ end
+ if tot < totentries then
+  cache[entries] = cache[entries] - 1
+
+ if cache[entries] < nodeEntries then
+  cache[data] = cache[data] || '|'.copies((rLength + 10) * (nodeEntries - cache[entries]))
+
+ cache[data] = prevP.right(9) || cache[data] || nextP.right(9)
+ cache[inuse] = 0
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 23 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: splitNode(Node)
+   -------
+
+   Purpose:
+   --------
+   split a node in two -- creating a new node
+   and putting in it half of the items currently
+   in the old one.
+
+   Parameters:
+   -----------
+   A) Node: a pointer to the node to be splitted.
+
+   Returns:
+   --------
+   A Rexx string composed like this:
+   oldnode_pointer|oldnode_maxitem|newnode_pointer|newnode_maxitem
+
+   Notes:
+   ------
+   The nodes (both new and old) get stored on disk after this
+   method has finished.
+   The new node is always getting the last half of the items
+   (the ones with the higher key values, eg M-Z in an A-Z range).
+   Next and Previous pointers for both new and old nodes are correctly
+   set to their new values.
+   The reference pointing to the old node is, on return, still
+   containing the old node (although it now has less items in it).
+
+   See also:
+   ---------
+   splitRoot, balanceNodes, mergeToLNode, mergeToRNode
+*/
+
+method splitNode(cache = Rexx[]) private returns Rexx
+ nli = Rexx
+ nlp = Rexx
+ ii = int
+ i = int
+ tNode = Rexx[]
+ half = Rexx
+ full = Rexx
+ tempData = Rexx
+ dataStart = Rexx
+
+ -- We need a new node for the split.
+ if freeNode \= 0 then -- we can reuse an empty node
+ do
+  tNode = getNode(freeNode)
+
+  -- update freeNode information on disk.
+  freeNode = getNextNodePointer(tNode)
+  if updateReusableNode \= "READY:" then
+   return error(1)
+ end
+ else -- we must create a new node
+ do
+  loop label innerloop ii = 0 to cnSize
+   if \cacheNode[ii, inuse] then
+    leave innerloop
+  end
+
+  if ii > cnSize then ii = cnSize
+
+  tNode = cacheNode[ii]
+  tNode[age] = 1
+
+  tNode[index] = (nodeIdxSize - 9) % nodeSize + 1
+  nodeIdxSize = nodeIdxSize + nodeSize
+  tNode[data] = newNodeData
+  tNode[entries] = 0
+ end
+
+ nlp = tNode[index]
+
+ -- Remove half of the entries in cache[] and put them in cacheNode[ii]
+ half = cache[entries] % 2
+ full = cache[entries]
+
+ tempData = ""
+ loop i = half to full -- Warning: 'full' can be the inf key..
+  dataStart = 10 + (i - 1) * (rLength + 10)
+  tempData = tempData || cache[data].substr(dataStart, rLength + 10)
+  cache[data] = cache[data].left(dataStart - 1) || "|".copies(rLength + 10) || -
+                cache[data].right(nodeSize - dataStart - rLength - 9)
+  cache[entries] = cache[entries] - 1
+  tNode[entries] = tNode[entries] + 1
+ end
+
+ tempData = tempData || "|".copies((nodeEntries - tNode[entries]) * (rLength + 10))
+ tempData = "0".copies(9) || tempData || "0".copies(9)
+ tNode[data] = tempData
+
+ -- update nodes pointers.
+ setPreviousNodePointer(tNode, cache[index])
+ setNextNodePointer(tNode, getNextNodePointer(cache))
+ setNextNodePointer(cache, tNode[index])
+
+ -- store nodes on disk.
+ putNode(cache)
+ putNode(tNode)
+
+ nli = tNode[data].substr(10 + (tNode[entries] - 1) * (rLength + 10), rLength)
+
+ -- Update the previous pointer for the next node originally
+ -- pointed by the old node.
+ tempData = getNextNodePointer(tNode)
+ if tempData \= 0 then
+ do
+  tNode = getNode(tempData)
+  setPreviousNodePointer(tNode, getNextNodePointer(cache))
+  PutNode(tNode)
+ end
+ -- return old_index|old_maxitem|new_index|new_maxitem
+ tempData = cache[index].right(9) || "|" || -
+            cache[data].substr(10 + (cache[entries] - 1) * (rLength + 10), rLength) || "|" || -
+            nlp.right(9) || "|" || nli
+
+ return tempData
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 23 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: mergeToLNode(Node1, Node2)
+   -------
+
+   Purpose:
+   --------
+   merge two nodes.
+
+   Parameters:
+   -----------
+   A) Node1: a pointer to a node.
+   B) Node2: a pointer to a node.
+
+   Returns:
+   --------
+   A Rexx string that represent the new maximum
+   item for Node1.
+
+   Notes:
+   ------
+   All of the information gets stored into disk after
+   processing.
+   Node2 must always be the one pointed by NextPointer in
+   Node1.
+   The reference pointing to the old Node1 is, on return, still
+   containing the old node (although it now has more items in it),
+   while Node2 has been freed and added to the pool of reusable
+   nodes, and now its reference may contain another node.
+
+   See also:
+   ---------
+   balanceNodes, splitNode
+*/
+
+method mergeToLNode(node1 = Rexx[], node2 = Rexx[]) private returns Rexx
+ tdata = Rexx
+ tother = Rexx
+ i = int
+ nextP = Rexx
+
+ loop i = 1 to node2[entries] -- Add items from node2 to node1
+  tdata = node2[data].substr(10 + (i - 1) * (rLength + 10), rLength)
+  tother = node2[data].substr(10 + (i - 1) * (rLength + 10) + rLength, 10)
+  addNodeItem(node1, tdata, tother)
+ end
+
+ -- Now, free node2
+ nextP = getNextNodePointer(node2)
+
+ node2[data] = newNodeData
+ setNextNodePointer(node2, freeNode.right(9))
+ setPreviousNodePointer(node2, 0)
+ putNode(node2)
+ freeNode = node2[index]
+ updateReusableNode
+
+ -- if node2 was pointing to a brother node, update its information.
+ if nextP \= 0 then
+ do
+  node1[inuse] = 1
+  node2 = getNode(nextP)
+  node1[inuse] = 0
+
+  setNextNodePointer(node1, node2[index])
+  setPreviousNodePointer(node2, node1[index])
+
+  putNode(node1)
+  putNode(node2)
+ end
+ else
+ do
+  setNextNodePointer(node1, 0)
+  putNode(node1)
+ end
+
+ return node1[data].substr(10 + (rLength + 10) * (node1[entries] - 1), rLength)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 30 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: mergeToRNode(Node1, Node2)
+   -------
+
+   Purpose:
+   --------
+   merge two nodes.
+
+   Parameters:
+   -----------
+   A) Node1: a pointer to a node.
+   B) Node2: a pointer to a node.
+
+   Returns:
+   --------
+   A Rexx string that represent the new maximum
+   item for Node1.
+
+   Notes:
+   ------
+   All of the information gets stored into disk after
+   processing.
+   Node2 must always be the one pointed by NextPointer in
+   Node1.
+   The reference pointing to the old Node2 is, on return, still
+   containing the old node (although it now has more items in it),
+   while Node1 has been freed and added to the pool of reusable
+   nodes, and now its reference may contain another node.
+
+   See also:
+   ---------
+   balanceNodes, splitNode
+*/
+
+method mergeToRNode(node1 = Rexx[], node2 = Rexx[]) private returns Rexx
+ tdata = Rexx
+ tother = Rexx
+ i = int
+ prevP = Rexx
+
+ loop i = 1 to node1[entries] -- Add items from node1 to node2
+  tdata = node1[data].substr(10 + (i - 1) * (rLength + 10), rLength)
+  tother = node1[data].substr(10 + (i - 1) * (rLength + 10) + rLength, 10)
+  addNodeItem(node2, tdata, tother)
+ end
+
+ -- Now, free node1
+ prevP = getNextNodePointer(node1).strip
+
+ node1[data] = newNodeData
+ setNextNodePointer(node1, freeNode.right(9))
+ setPreviousNodePointer(node1, 0)
+ putNode(node1)
+ freeNode = node1[index]
+ updateReusableNode
+
+ -- if node1 was pointing to a brother node, update its information.
+ if prevP \= 0 then
+ do
+  node2[inuse] = 1
+  node1 = getNode(prevP)
+  node2[inuse] = 0
+
+  setNextNodePointer(node1, node2[index])
+  setPreviousNodePointer(node2, prevP)
+
+  putNode(node1)
+  putNode(node2)
+ end
+ else
+ do
+  setNextNodePointer(node1, 0)
+  putNode(node1)
+ end
+
+ return node2[data].substr(10 + (rLength + 10) * (node2[entries] - 1), rLength)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 23 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: balanceNodes(Node1, Node2)
+   -------
+
+   Purpose:
+   --------
+   balance the items between two nodes
+   (have an equal number of items in both nodes).
+
+   Parameters:
+   -----------
+   A) Node1: a pointer to a node.
+   B) Node2: a pointer to a node.
+
+   Returns:
+   --------
+   A Rexx string that represent the new maximum
+   item for Node1.
+
+   Notes:
+   ------
+   All of the information gets stored into disk after
+   processing.
+   Node2 must always be the one pointed by NextPointer in
+   Node1.
+   The references pointing to the old Node1 and Node2 are,
+   on return, still containing the old nodes (although they now
+   have a different number of items in them).
+
+   See also:
+   ---------
+   mergeToLNode, mergeToRNode, splitNode
+*/
+
+method balanceNodes(node1 = Rexx[], node2 = Rexx[]) private returns Rexx
+ fairAmount = int
+ tdata = Rexx
+ tother = Rexx
+ n1e = Rexx node1[entries]
+ n2e = Rexx node2[entries]
+ howMany = int
+
+ fairAmount = (n1e + n2e) % 2
+
+ -- Let's define who's full and who's nearly empty.
+ if n1e > n2e then
+ do
+  howMany = n1e - fairAmount
+  loop for howMany -- split the items between the nodes.
+   tdata = node1[data].substr(10 + (node1[entries] - 1) * (rLength + 10), rLength)
+   tother = node1[data].substr(10 + (node1[entries] - 1) * (rLength + 10) + rLength, 10)
+   addNodeItem(node2, tdata, tother)
+   delNodeItem(node1, tdata)
+  end
+ end
+ else
+ do
+  howMany = n2e - fairAmount
+  loop for howMany -- split the items between the nodes.
+   tdata = node2[data].substr(10 + (node2[entries] - 1) * (rLength + 10), rLength)
+   tother = node2[data].substr(10 + (node2[entries] - 1) * (rLength + 10) + rLength, 10)
+   addNodeItem(node1, tdata, tother)
+   delNodeItem(node2, tdata)
+  end
+ end
+
+ putNode(node1)
+ putNode(node2)
+
+ return node1[data].substr(10 + (node1[entries] - 1) * (rLength + 10), rLength)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 24 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: splitRoot
+   -------
+
+   Purpose:
+   --------
+   split the root node.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+   It is only by means of this method that a B+Tree
+   can grow its height.
+   The new nodes are always getting all of the items, while root
+   node only gets the two items with the highest key from the
+   new nodes.
+   Next and Previous pointers for both new and old nodes are correctly
+   set to their new values.
+   Root node remains root node (first node on the file) even after the
+   split.
+   All of the nodes processed get saved on disk by this method.
+
+   See also:
+   ---------
+   splitNode
+*/
+
+method splitRoot private returns Rexx
+ tNode = Rexx[]
+ tNode2 = Rexx[]
+ i = int
+ half = int
+ tdata = Rexx
+ tother = Rexx
+
+ -- We need two new nodes for the split.
+
+ -- Here's the first new node
+ if freeNode \= 0 then -- we can reuse an empty node
+ do
+  tNode = getNode(freeNode)
+  -- update freeNode information on disk.
+  freeNode = getNextNodePointer(tNode)
+  if updateReusableNode \= "READY:" then
+   return error(1)
+  setNextNodePointer(tNode, 0)
+  setPreviousNodePointer(tNode, 0)
+ end
+ else -- we must create a new node
+ do
+  loop label innerloop i = 0 to cnSize
+   if \cacheNode[i, inuse] then
+    leave innerloop
+  end
+
+  if i > cnSize then i = cnSize
+  tNode = cacheNode[i]
+  tNode[age] = 1
+
+  tNode[index] = (nodeIdxSize - 9) % nodeSize + 1
+  nodeIdxSize = nodeIdxSize + nodeSize
+  tNode[data] = newNodeData
+  tNode[entries] = 0
+ end
+ tNode[inuse] = 1
+
+ -- And here's the second new node
+ if freeNode \= 0 then -- we can reuse an empty node
+ do
+  tNode2 = getNode(freeNode)
+
+  -- update freeNode information on disk.
+  freeNode = getNextNodePointer(tNode2)
+  setNextNodePointer(tNode2, 0)
+  setPreviousNodePointer(tNode2, 0)
+  if updateReusableNode \= "READY:" then
+  do
+   tNode[inuse] = 0
+   return error(1)
+  end
+ end
+ else -- we must create a new node
+ do
+  loop label innerloop i = 0 to cnSize
+   if \cacheNode[i, inuse] then
+    leave innerloop
+  end
+
+  if i > cnSize then i = cnSize
+  tNode2 = cacheNode[i]
+  tNode2[age] = 1
+
+  tNode2[index] = (nodeIdxSize - 9) % nodeSize + 1
+  nodeIdxSize = nodeIdxSize + nodeSize
+  tNode2[data] = newNodeData
+  tNode2[entries] = 0
+ end
+ tNode2[inuse] = 1
+
+ -- Now, tNode and tNode2 contain blank nodes.
+
+ half = root[entries] % 2
+
+ -- Give the first half of nodes (lower keys) to ii.
+ loop i = 1 to half
+  tdata = root[data].substr(10 + (i - 1) * (rLength + 10), rLength)
+  tother = root[data].substr(10 + (i - 1) * (rLength + 10) + rLength, 10)  
+  addNodeItem(tNode, tdata, tother)
+ end
+ -- setup correct pointer information for ii.
+ setPreviousNodePointer(tNode, 0)
+ setNextNodePointer(tNode, tNode2[index])
+
+ -- Give the second half of nodes (upper keys) to i3.
+ loop i = (half + 1) to root[entries]
+  tdata = root[data].substr(10 + (i - 1) * (rLength + 10), rLength)
+  tother = root[data].substr(10 + (i - 1) * (rLength + 10) + rLength, 10)  
+  addNodeItem(tNode2, tdata, tother)
+ end
+ -- setup correct pointer information for i3.
+ setNextNodePointer(tNode2, 0)
+ setPreviousNodePointer(tNode2, tNode[index])
+
+ -- Store a reference to the new nodes in the root node.
+ root[data] = newNodeData
+ tdata = tNode[data].substr(10 + (tNode[entries] - 1) * (rLength + 10), rLength)
+ tdata = tdata || "N" || tNode[index].strip.right(9)
+ tdata = tdata || tNode2[data].substr(10 + (tNode2[entries] - 1) * (rLength + 10), rLength)
+ tdata = tdata || "N" || tNode2[index].strip.right(9)
+ root[data] = root[data].left(9) || tdata || '|'.copies((rLength + 10) * (nodeEntries - 2)) || -
+              root[data].right(9)
+ root[entries] = 2
+
+ -- Store nodes on disk.
+ putNode(root)
+ putNode(tNode)
+ putNode(tNode2)
+
+ -- We're not working on tNode and tNode2 anymore.
+ tNode[inuse] = 0
+ tNode2[inuse] = 0
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 24 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findLeafFitting(Item)
+   -------
+
+   Purpose:
+   --------
+   browse the tree, and find a pointer to the leaf
+   that could contain Item.
+
+   Parameters:
+   -----------
+   A) Item: a Rexx string.
+
+   Returns:
+   --------
+   An appropriate error, or a leaf+node pointer.
+
+   Notes:
+   ------
+   A Leaf pointer is a Rexx string composed by two parts:
+   both are long ten characters each, the first represents
+   a leaf, the second represents a node.
+   Leaf part:
+   the first char is an L, and the other nine are numbers (and/or
+   spaces between the L and the numbers).
+   Node part:
+   the first char is an N, and the other nine are numbers (and/or
+   spaces between the N and the numbers).
+
+   The leaf referenced by the returned pointer is the one that
+   could contain item -- but it is not granted that the leaf
+   really contains such an item.
+   During the process of browsing (top-down) the tree, if there
+   are nodes (or even the root) which are full, they get splitted.
+   (And I mean SPLITTED, not balanced with brother nodes)
+
+   See also:
+   ---------
+*/
+
+method findLeafFitting(item = Rexx) private returns Rexx
+ oldItem = Rexx
+ n1i = Rexx
+ n2i = Rexx
+ n1p = Rexx
+ n2p = Rexx
+ tdata = Rexx
+ tpointer = Rexx
+ prevNode = Rexx[]
+ curNode = Rexx[]
+ i = int
+
+ item = item.strip
+
+ -- Start with root: if it's full, split it.
+ root[inuse] = 1
+ if root[entries] = nodeEntries then
+  splitRoot
+
+ -- Look for the pointer that fits our request.
+ loop label mainloop i = 1 to root[entries]
+  tdata = root[data].substr(10 + (rLength + 10) * (i - 1), rLength).strip
+  if (tdata >= item) | (tdata = inf) then
+  do
+   tpointer = root[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   leave mainloop
+  end
+ end
+
+ -- tpointer contains the pointer to something (node or leaf)
+ -- that fits 'item'.
+
+ prevNode = root
+
+ -- Now, search for the leaf ad libitum..
+ loop label mainloop while tpointer.left(1) \= "L"
+  tpointer = tpointer.right(9).strip
+  curNode = getNode(tpointer)
+  curNode[inuse] = 1
+
+  -- If the current node must be split, take care of that.
+  if curNode[entries] = nodeEntries then
+  do
+   oldItem = curNode[data].substr(10 + (rLength + 10) * (curNode[entries] - 1), rLength).strip
+   tdata = splitNode(curNode)
+   delNodeItem(prevNode, oldItem)
+   parse tdata n1p "|" n1i "|" n2p "|" n2i
+   n1p = "N" || n1p
+   n2p = "N" || n2p
+   addNodeItem(prevNode, n1i, n1p)
+   addNodeItem(prevNode, n2i, n2p)
+   putNode(prevNode)
+   if n1i.strip >= item then
+    tpointer = n1p
+   else
+    tpointer = n2p
+
+   iterate mainloop
+  end
+
+  -- Look for the pointer that fits our request.
+  loop label innerloop i = 1 to curNode[entries]
+   tdata = curNode[data].substr(10 + (rLength + 10) * (i - 1), rLength).strip
+   if (tdata >= item) | (tdata = inf) then
+   do
+    tpointer = curNode[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+    leave innerloop
+   end
+  end
+
+  -- The current node must now become the old one.
+  prevNode[inuse] = 0
+  prevNode = curNode
+ catch NullPointerException
+  checkConsistency
+ end
+
+ prevNode[inuse] = 0
+ tpointer = tpointer || "|N" || prevNode[index].right(9)
+
+ return tpointer
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 24 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findLeafAndTrack(Item, NodesArray)
+   -------
+
+   Purpose:
+   --------
+   browse the tree, and find a pointer to the leaf
+   that could contain Item, building an array that
+   maintain information about visited nodes.
+
+   Parameters:
+   -----------
+   A) Item: a Rexx string.
+   B) NodesArray: a Rexx array.
+
+   Returns:
+   --------
+   An appropriate error, or a leaf pointer.
+
+   Notes:
+   ------
+   The leaf referenced by the returned pointer is the one that
+   could contain item -- but it is not granted that the leaf
+   really contains such an item.
+
+   The array built during the browse process is built this way:
+   [0] = number of nodes visited.
+   [n] = <node_index><our_item_appears?><is_item_last?>
+   where:
+    node_index is a 9 digit number.
+    our_item_appears? is a 1 digit number (boolean) that tells
+                      us if the item we're looking for appears
+                      in this node.
+    is_item_last? is a 1 digit number (boolean) that tells us
+                  if the item is the last in this node.
+
+   During the process of browsing (top-down) the tree, if there
+   are nodes (or even the root) which are full, they get splitted.
+   (And I mean SPLITTED, not balanced with brother nodes)
+
+   See also:
+   ---------
+*/
+
+method findLeafAndTrack(item = Rexx, narray = Rexx) private returns Rexx
+ oldItem = Rexx
+ n1i = Rexx
+ n2i = Rexx
+ n1p = Rexx
+ n2p = Rexx
+ tdata = Rexx
+ tpointer = Rexx
+ prevNode = Rexx[]
+ curNode = Rexx[]
+ i = int
+
+ item = item.strip
+
+ -- Start with root: if it's full, split it.
+ root[inuse] = 1
+ if root[entries] = nodeEntries then
+  splitRoot
+
+ -- Look for the pointer that fits our request.
+ loop label mainloop i = 1 to root[entries]
+  tdata = root[data].substr(10 + (rLength + 10) * (i - 1), rLength).strip
+  if (tdata >= item) | (tdata = inf) then
+  do
+   -- Update tracking information.
+   narray[0] = narray[0] + 1
+   narray[narray[0]] = '1'.right(9)
+   if tdata = item then
+    narray[narray[0]] =  narray[narray[0]] || '1'
+   else
+    narray[narray[0]] =  narray[narray[0]] || '0'
+   if i = root[entries] then
+    narray[narray[0]] =  narray[narray[0]] || '1'
+   else
+    narray[narray[0]] =  narray[narray[0]] || '0'
+
+   tpointer = root[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   leave mainloop
+  end
+ end
+
+ -- tpointer contains the pointer to something (node or leaf)
+ -- that fits 'item'.
+
+ prevNode = root
+
+ -- Now, search for the leaf ad libitum..
+ loop label mainloop while tpointer.left(1) \= "L"
+
+  tpointer = tpointer.right(9).strip
+  curNode = getNode(tpointer)
+  curNode[inuse] = 1
+
+  -- If the current node must be split, take care of that.
+  if curNode[entries] = nodeEntries then
+  do
+   oldItem = curNode[data].substr(10 + (rLength + 10) * (curNode[entries] - 1), rLength)
+   tdata = splitNode(curNode)
+   delNodeItem(prevNode, oldItem)
+   parse tdata n1p "|" n1i "|" n2p "|" n2i
+   n1p = "N" || n1p
+   n2p = "N" || n2p
+   addNodeItem(prevNode, n1i, n1p)
+   addNodeItem(prevNode, n2i, n2p)
+   putNode(prevNode)
+   if n1i.strip >= item then
+    tpointer = n1p
+   else
+    tpointer = n2p
+
+   iterate mainloop
+  end
+
+  -- Look for the pointer that fits our request.
+  loop label innerloop i = 1 to curNode[entries]
+   tdata = curNode[data].substr(10 + (rLength + 10) * (i - 1), rLength).strip
+   if (tdata >= item) | (tdata = inf) then
+   do
+    -- Update tracking information.
+    narray[0] = narray[0] + 1
+    narray[narray[0]] = curNode[index].right(9)
+    if tdata = item then
+     narray[narray[0]] =  narray[narray[0]] || '1'
+    else
+     narray[narray[0]] =  narray[narray[0]] || '0'
+    if i = curNode[entries] then
+     narray[narray[0]] =  narray[narray[0]] || '1'
+    else
+     narray[narray[0]] =  narray[narray[0]] || '0'
+
+    tpointer = curNode[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+    leave innerloop
+   end
+  end
+
+  -- The current node must now become the old one.
+  prevNode[inuse] = 0
+  prevNode = curNode
+ end
+
+ prevNode[inuse] = 0
+ tpointer = tpointer.right(tpointer.length - 1)
+
+ return tpointer
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 24 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: add(item, index)
+   -------
+
+   Purpose:
+   --------
+   add an item (and the database reference) to the
+   B+Tree.
+
+   Parameters:
+   -----------
+   A) Item: a string, representing the key.
+   B) Index: a database index.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   del, find
+*/
+
+method add(item = Rexx, idx = Rexx) public returns Rexx
+ node = Rexx
+ leaf = Rexx
+ tdata = Rexx
+ tdata2 = Rexx
+ tdata3 = Rexx
+ olp = Rexx
+ oli = Rexx
+ nlp = Rexx
+ nli = Rexx
+ bFound = boolean 0
+ i = int
+ tnode = Rexx[]
+ tLeaf = Rexx[]
+
+ item = item.right(rLength)
+
+ -- Find the leaf where to store this item, and the node where it came from.
+ tdata = findLeafFitting(item)
+ parse tdata "L" leaf "|N" node
+ -- Get the node from where this item came.
+ bFound = 0
+ if node = 1 then
+ do
+  tnode = root
+  bFound = 1
+ end
+
+ if bFound = 0 then
+  tnode = getNode(node)
+ tnode[inuse] = 1
+
+ -- ** Look for the item in the node that represents this leaf.
+ loop label innerloop i = 1 to tnode[entries]
+  tdata3 = tnode[data].substr(10 + (rLength + 10) * (i - 1), rLength)
+  if (tdata3 >= item) | (tdata3 = inf) then
+   leave innerloop
+ end
+
+ tLeaf = getLeaf(leaf)
+ if isItemInLeaf(tLeaf, item) \= 0 & duplicatesAllowed = 0 then
+ do
+  tnode[inuse] = 0
+  return error(2)
+ end
+
+ -- ** We need the max item in the leaf in order to delete 
+ -- ** (later, perhaps) the old leaf in the node.
+ if tLeaf[entries] \= 0 then
+  tdata2 = tLeaf[data].substr(10 + (tLeaf[entries] - 1) * (rLength + 18), rLength)
+ else
+  tdata2 = null
+
+ -- Splitting the leaf, if it's full.
+ if tLeaf[entries] = leafEntries then
+ do
+  tLeaf[inuse] = 1
+  tdata = splitLeaf(tLeaf)
+  tLeaf[inuse] = 0
+
+  parse tdata olp "|" oli "|" nlp "|" nli
+  -- Update the node after the split.
+  if tdata3 \= inf then
+  do
+   delNodeItem(tnode, tdata2.strip)
+   addNodeItem(tnode, oli, "L" || olp.right(9))
+   addNodeItem(tnode, nli, "L" || nlp.right(9))
+  end
+  else
+  do
+   delNodeItem(tnode, inf)
+   addNodeItem(tnode, oli, "L" || olp.right(9))
+   addNodeItem(tnode, inf, "L" || nlp.right(9))
+  end
+  putNode(tnode)
+
+  if oli.strip >= item.strip then
+  do
+   tLeaf[inuse] = 1
+   tdata = addLeafItem(tLeaf, item, idx)
+   tLeaf[inuse] = 0
+  end
+  else
+  do
+   tLeaf = getLeaf(nlp)
+   tLeaf[inuse] = 1
+   tdata = addLeafItem(tLeaf, item, idx)
+   tLeaf[inuse] = 0
+  end
+ end
+ else -- Leaf is not full
+ do
+  tLeaf[inuse] = 1
+  tdata = addLeafItem(tLeaf, item, idx)
+  tLeaf[inuse] = 0
+ end
+
+ if tdata = 1 then
+  saveLeaf(tLeaf)
+
+ tnode[inuse] = 0
+
+ -- If that leaf had the max pointer in the node, change the node (and upper
+ -- nodes if necessary). If that leaf had as a pointer 'inf', don't do anything.
+ if tdata2 \= null then
+  if (item > tdata2) & (tdata3 \= inf) then
+   renameInNodes(tdata2, item)
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Thu 25 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: renameInNodes(oldName, newName)
+   -------
+
+   Purpose:
+   --------
+   Rename, in the whole B+Tree, all the elements
+   'oldName' in 'newName'.
+
+   Parameters:
+   -----------
+   A) oldName: a string, representing the old name.
+   B) newName: a string, representing the new name.
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method renameInNodes(oldName = Rexx, newName = Rexx) private
+ tdata = Rexx
+ tpointer = Rexx
+ curNode = Rexx[]
+ i = int
+
+ oldName = oldName.right(rLength)
+ newName = newName.right(rLength)
+ -- Start with root.
+
+ -- Look for the pointer that fits our request.
+ loop label mainloop i = 1 to root[entries]
+  tdata = root[data].substr(10 + (rLength + 10) * (i - 1), rLength)
+  if tdata = oldName then
+  do
+   tpointer = root[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   -- subst. oldname with newname
+   root[data] = root[data].overlay(newName, 10 + (rLength + 10) * (i - 1))
+   putNode(root)
+   leave mainloop
+  end
+  else if (tdata > oldName) | (tdata = inf) then
+  do
+   tpointer = root[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   leave mainloop
+  end
+ end
+
+ -- tpointer contains the pointer to something (node or leaf)
+ -- that fits 'oldName'.
+
+ -- Now, search for the leaf ad libitum..
+ loop label mainloop while tpointer.left(1) \= "L"
+  tpointer = tpointer.right(9).strip
+
+  curNode = getNode(tpointer)
+  curNode[inuse] = 1
+
+  -- Look for the pointer that fits our request.
+  loop label innerloop i = 1 to curNode[entries]
+   tdata = curNode[data].substr(10 + (rLength + 10) * (i - 1), rLength)
+   if tdata = oldName then
+   do
+    tpointer = curNode[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+    -- subst. oldname with newname
+    curNode[data] = curNode[data].overlay(newName, 10 + (rLength + 10) * (i - 1))
+    putNode(curNode)
+    leave mainloop
+   end
+   else if (tdata > oldName) | (tdata = inf) then
+   do
+    tpointer = curNode[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+    leave innerloop
+   end
+  end
+ end
+
+ return
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 24 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: exactMatch(item)
+   -------
+
+   Purpose:
+   --------
+   get all of the B+Tree elements that exactly
+   match 'item'.
+
+   Parameters:
+   -----------
+   A) Item: a string, representing the key.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   Duplicate leaves, if present, are browsed as well as
+   the leaf passed as the parameter.
+
+   See also:
+   ---------
+*/
+
+method exactMatch(item = Rexx) private returns Rexx
+ ret = Rexx
+ tdata = Rexx
+ leaf = Rexx
+ tLeaf = Rexx[]
+
+ -- Find the leaf where to store this item.
+ tdata = findLeafFitting(item)
+ parse tdata "L" leaf "|N" .
+
+ -- Get the leaf where to get our item from.
+ tLeaf = getLeaf(leaf)
+
+ tLeaf[inuse] = 1
+ ret = getLeafItem(tLeaf, item)
+ tLeaf[inuse] = 0
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 27 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findRange(Leaf1, Item1, Leaf2, Item2)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Leaf1: The leaf to start from.
+   B) Item1: The item (in Leaf1) to
+             start from.
+   C) Leaf2: The leaf where to stop.
+   D) Item2: The item (in Leaf2) to
+             stop at.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+   If Item1 is null, means 'get all from the first item of
+      Leaf1 to Item2 of Leaf2'.
+   If Leaf2 is null, means 'get all from Item1 of Leaf1 to
+      the last record in archive'. In this case, Item2 value
+      is irrelevant.
+   Nulls in Item1/Leaf2 can be used together if needed,
+   of course.
+
+   See also:
+   ---------
+*/
+
+method findRange(leaf1 = Rexx, item1 = Rexx, leaf2 = Rexx, item2 = Rexx) private returns Rexx
+ ii = int -- For loops
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ dupLeaf = Rexx
+ tLeaf = Rexx[]
+
+ -- Get leaf1.
+ tLeaf = getLeaf(leaf1)
+
+ if leaf2 = null then
+  leaf2 = 0
+
+ -- Get the starting point.
+ if item1 = null then
+  item1 = 1
+ else
+ do
+  if item1 > tLeaf[entries] then
+  do
+   ret[0] = error(3)
+   return ret
+  end
+ end
+ -- **** We have item1
+
+ if leaf2 = leaf1 then -- **** All in a leaf
+ do
+  loop ii = item1 to item2
+   ret[0] = ret[0] + 1
+   ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+   dupleaf     = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+   if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    getDuplicates(dupleaf, ret)
+  end
+  return ret
+ end
+
+ -- **** Query is split among several leaves.
+
+ loop ii = item1 to tLeaf[entries] -- **** First leaf.
+  ret[0] = ret[0] + 1
+  ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+  dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+  if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+  do
+   tLeaf[inuse] = 1
+   getDuplicates(dupleaf, ret)
+   tLeaf[inuse] = 0
+  end
+ end
+
+ bLastLeaf = 0
+ nlp = getNextLeafPointer(tLeaf)
+
+ loop while bLastLeaf = 0 & nlp \= 0
+  -- **** Get next leaf
+  tLeaf = getLeaf(nlp)
+  nlp = getNextLeafPointer(tLeaf)
+
+  -- **** See if it's the last one
+  if leaf2 = 0 & nlp = 0 then
+   bLastLeaf = 1
+  else if leaf2 = tLeaf[index] then
+   bLastLeaf = 1
+
+  if leaf2 = 0 | bLastLeaf = 0 then -- Get all items in this leaf.
+  do
+   loop ii = 1 to tLeaf[entries]
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+  else -- Get the last few items
+  do
+   if item2 > tLeaf[entries] then
+   do
+    ret[0] = error(3)
+    return ret
+   end
+
+   loop ii = 1 to item2
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end 
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 27 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findEndingWithAndRange(Leaf1, Item1, Leaf2, Item2, After)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Leaf1: The leaf to start from.
+   B) Item1: The item (in Leaf1) to
+             start from.
+   C) Leaf2: The leaf where to stop.
+   D) Item2: The item (in Leaf2) to
+             stop at.
+   E) After:  what an item should end with
+              in order to comply with this search.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+   If Item1 is null, means 'get all from the first item of
+      Leaf1 to Item2 of Leaf2'.
+   If Leaf2 is null, means 'get all from Item1 of Leaf1 to
+      the last record in archive'. In this case, Item2 value
+      is irrelevant.
+   Nulls in Item1/Leaf2 can be used together if needed,
+   of course.
+
+   See also:
+   ---------
+*/
+
+method findEndingWithAndRange(leaf1 = Rexx, item1 = Rexx, leaf2 = Rexx, item2 = Rexx, after = Rexx) private returns Rexx
+ ii = int -- For loops
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ dupLeaf = Rexx
+ tLeaf = Rexx[]
+ aLen = int after.length
+
+ -- Get leaf1.
+ tLeaf = getLeaf(leaf1)
+
+ if leaf2 = null then
+  leaf2 = 0
+
+ -- Get the starting point.
+ if item1 = null then
+  item1 = 1
+ else
+ do
+  if item1 > tLeaf[entries] then
+  do
+   ret[0] = error(2)
+   return ret
+  end
+ end
+ -- **** We have item1
+
+ if leaf2 = leaf1 then -- **** All in a leaf
+ do
+  loop ii = item1 to item2
+   if tLeaf[data].substr(10 + (rLength + 18) * (ii - 1), rLength).right(aLen) = after then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+     getDuplicates(dupleaf, ret)
+   end
+  end
+  return ret
+ end
+
+ -- **** Query is split among several leaves.
+
+ loop ii = item1 to tLeaf[entries] -- **** First leaf.
+  ret[0] = ret[0] + 1
+  if tLeaf[data].substr(10 + (rLength + 18) * (ii - 1), rLength).right(aLen) = after then
+  do
+   ret[0] = ret[0] + 1
+   ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+   dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+   if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+   do
+    tLeaf[inuse] = 1
+    getDuplicates(dupleaf, ret)
+    tLeaf[inuse] = 0
+   end
+  end
+ end
+
+ bLastLeaf = 0
+ nlp = getNextLeafPointer(tLeaf)
+
+ loop while bLastLeaf = 0 & nlp \= 0
+  -- **** Get next leaf
+  tLeaf = getLeaf(nlp)
+  nlp = getNextLeafPointer(tLeaf)
+
+  -- **** See if it's the last one
+  if leaf2 = 0 & nlp = 0 then
+   bLastLeaf = 1
+  else if leaf2 = tLeaf[index] then
+   bLastLeaf = 1
+
+  if leaf2 = 0 | bLastLeaf = 0 then -- Get all items in this leaf.
+  do
+   loop ii = 1 to tLeaf[entries]
+    if tLeaf[data].substr(10 + (rLength + 18) * (ii - 1), rLength).right(aLen) = after then
+    do
+     ret[0] = ret[0] + 1
+     ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+     dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+     if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+     do
+      tLeaf[inuse] = 1
+      getDuplicates(dupleaf, ret)
+      tLeaf[inuse] = 0
+     end
+    end
+   end
+  end
+  else -- Get the last few items
+  do
+   if item2 > tLeaf[entries] then
+   do
+    ret[0] = error(2)
+    return ret
+   end
+
+   loop ii = 1 to item2
+    if tLeaf[data].substr(10 + (rLength + 18) * (ii - 1), rLength).right(aLen) = after then
+    do
+     ret[0] = ret[0] + 1
+     ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength, 9)
+     dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (ii - 1) + rLength + 9, 9)
+     if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+     do
+      tLeaf[inuse] = 1
+      getDuplicates(dupleaf, ret)
+      tLeaf[inuse] = 0
+     end
+    end
+   end
+  end 
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findAllEndingWith(Item)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Item: an item; all of the BPlusTree entries
+            ending in 'Item' will be returned.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+
+   See also:
+   ---------
+*/
+
+method findAllEndingWith(item = Rexx) private returns Rexx
+ i = int
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ leaf = Rexx
+ temp = Rexx
+ tLeaf = Rexx[]
+
+ ilen = item.length
+ temp = findFirstLeaf
+ parse temp "L" leaf "|N" .
+
+ -- **** We have leaf1
+ tLeaf = getLeaf(leaf)
+ if tLeaf[entries] = 0 then bLastLeaf = 1
+
+ loop while bLastLeaf = 0
+  loop i = 1 to tLeaf[entries]
+   if tLeaf[data].substr((rLength + 18) * (i - 1) + 10, rLength).right(ilen) = item then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength + 9, 9).strip
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+
+  temp = getNextLeafPointer(tLeaf)
+  if temp = 0 then -- It was the last leaf
+   bLastLeaf = 1
+  else
+   tLeaf = getLeaf(temp)
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findNotBegAndEndWith(Begin, End)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Begin: items shouldn't begin with this
+             to be included AND
+   B) End:   items shouldn't end with this to
+             be included.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+
+   See also:
+   ---------
+*/
+
+method findNotBegAndEndWith(begin = Rexx, endin = Rexx) private returns Rexx
+ i = int
+ bLen = int begin.length
+ aLen = int endin.length
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ leaf = Rexx
+ temp = Rexx
+ tLeaf = Rexx[]
+ ref = Rexx
+
+ temp = findFirstLeaf
+ parse temp "L" leaf "|N" .
+
+ -- **** We have leaf1
+ tLeaf = getLeaf(leaf)
+ if tLeaf[entries] = 0 then bLastLeaf = 1
+
+ loop while bLastLeaf = 0
+  loop i = 1 to tLeaf[entries]
+   ref = tLeaf[data].substr((rLength + 18) * (i - 1) + 10, rLength).strip
+   if ref.left(bLen) \= begin | ref.right(aLen) \= endin then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength + 9, 9).strip
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+
+  temp = getNextLeafPointer(tLeaf)
+  if temp = 0 then -- It was the last leaf
+   bLastLeaf = 1
+  else
+   tLeaf = getLeaf(temp)
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findAllNotEndingWith(Item)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Item: an item; all of the BPlusTree entries
+            not ending in 'Item' will be returned.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+
+   See also:
+   ---------
+*/
+
+method findAllNotEndingWith(item = Rexx) private returns Rexx
+ i = int
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ leaf = Rexx
+ temp = Rexx
+ tLeaf = Rexx[]
+
+ ilen = item.length
+ temp = findFirstLeaf
+ parse temp "L" leaf "|N" .
+
+ -- **** We have leaf1
+ tLeaf = getLeaf(leaf)
+ if tLeaf[entries] = 0 then bLastLeaf = 1
+
+ loop while bLastLeaf = 0
+  loop i = 1 to tLeaf[entries]
+   if tLeaf[data].substr((rLength + 18) * (i - 1) + 10, rLength).right(ilen) \= item then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength + 9, 9).strip
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+
+  temp = getNextLeafPointer(tLeaf)
+  if temp = 0 then -- It was the last leaf
+   bLastLeaf = 1
+  else
+   tLeaf = getLeaf(temp)
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findAllContaining(Item)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Item: an item; all of the BPlusTree entries
+            containing 'Item' will be returned.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+
+   See also:
+   ---------
+*/
+
+method findAllContaining(item = Rexx) private returns Rexx
+ i = int
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ leaf = Rexx
+ temp = Rexx
+ tLeaf = Rexx[]
+
+ item = item.lower
+ temp = findFirstLeaf
+ parse temp "L" leaf "|N" .
+
+ -- **** We have leaf1
+ tLeaf = getLeaf(leaf)
+ if tLeaf[entries] = 0 then bLastLeaf = 1
+
+ loop while bLastLeaf = 0
+  loop i = 1 to tLeaf[entries]
+   if tLeaf[data].substr((rLength + 18) * (i - 1) + 10, rLength).lower.countstr(item) > 0 then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength + 9, 9).strip
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+
+  temp = getNextLeafPointer(tLeaf)
+  if temp = 0 then -- It was the last leaf
+   bLastLeaf = 1
+  else
+   tLeaf = getLeaf(temp)
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findAllNotContaining(Item)
+   -------
+
+   Purpose:
+   --------
+   get a range of database references.
+
+   Parameters:
+   -----------
+   A) Item: an item; all of the BPlusTree entries
+            not containing 'Item' will be returned.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   All duplicates are returned as well.
+
+   See also:
+   ---------
+*/
+
+method findAllNotContaining(item = Rexx) private returns Rexx
+ i = int
+ ret = Rexx 0
+ bLastLeaf = boolean 0
+ leaf = Rexx
+ temp = Rexx
+ tLeaf = Rexx[]
+
+ item = item.lower
+ temp = findFirstLeaf
+ parse temp "L" leaf "|N" .
+
+ -- **** We have leaf1
+ tLeaf = getLeaf(leaf)
+ if tLeaf[entries] = 0 then bLastLeaf = 1
+
+ loop while bLastLeaf = 0
+  loop i = 1 to tLeaf[entries]
+   if tLeaf[data].substr((rLength + 18) * (i - 1) + 10, rLength).lower.countstr(item) = 0 then
+   do
+    ret[0] = ret[0] + 1
+    ret[ret[0]] = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength, 9)
+    dupleaf = tLeaf[data].substr(10 + (rLength + 18) * (i - 1) + rLength + 9, 9).strip
+    if dupleaf \= 0 & dupleaf \= "|||||||||" then -- if there are dupl.leaves, get data also from there.
+    do
+     tLeaf[inuse] = 1
+     getDuplicates(dupleaf, ret)
+     tLeaf[inuse] = 0
+    end
+   end
+  end
+
+  temp = getNextLeafPointer(tLeaf)
+  if temp = 0 then -- It was the last leaf
+   bLastLeaf = 1
+  else
+   tLeaf = getLeaf(temp)
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Sat 27 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: findFirstLeaf
+   -------
+
+   Purpose:
+   --------
+   get the first leaf in the leaves pool.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+   A pointer to a leaf.
+
+   Notes:
+   ------
+   The leaf, after this method has finished,
+   is in the leaves cache.
+
+   See also:
+   ---------
+*/
+
+method findFirstLeaf private returns Rexx
+ oldItem = Rexx
+ n1i = Rexx
+ n2i = Rexx
+ n1p = Rexx
+ n2p = Rexx
+ tdata = Rexx
+ tpointer = Rexx
+ prevNode = Rexx[]
+ curNode = Rexx[]
+
+ -- Start with root: if it's full, split it.
+ root[inuse] = 1
+ if root[entries] = nodeEntries then
+  splitRoot
+
+ -- Look for the first pointer.
+ tpointer = root[data].substr(10 + rLength, 10)
+
+ prevNode = root
+
+ -- Now, search for the leaf ad libitum..
+ loop label mainloop while tpointer.left(1) \= "L"
+
+  tpointer = tpointer.right(9).strip
+  curNode = getNode(tpointer)
+  curNode[inuse] = 1
+
+  -- If the current node must be split, take care of that.
+  if curNode[entries] = nodeEntries then
+  do
+   oldItem = curNode[data].substr(10 + (rLength + 10) * (curNode[entries] - 1), rLength).strip
+   tdata = splitNode(curNode)
+   delNodeItem(prevNode, oldItem)
+   parse tdata n1p "|" n1i "|" n2p "|" n2i
+   n1p = "N" || n1p
+   n2p = "N" || n2p
+   addNodeItem(prevNode, n1i, n1p)
+   addNodeItem(prevNode, n2i, n2p)
+   putNode(prevNode)
+   tpointer = n1p
+
+   iterate mainloop
+  end
+
+  -- Look for the first pointer.
+  tpointer = curNode[data].substr(10 + rLength, 10)
+
+  -- The current node must now become the old one.
+  prevNode[inuse] = 0
+  prevNode = curNode
+ end
+
+ prevNode[inuse] = 0
+ tpointer = tpointer || "|N" || prevNode[index].right(9)
+
+ return tpointer
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 26 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: find(filter)
+   -------
+
+   Purpose:
+   --------
+   get all of the B+Tree elements that match
+   the filter condition expressed by 'filter'.
+
+   Parameters:
+   -----------
+   A) Filter: a string, representing the filter.
+
+   Returns:
+   --------
+   An array, where the [0] element is the number of the
+   elements found, while the [n] elements have in them
+   the database references.
+
+   Notes:
+   ------
+   The filter is in the form:
+   <operator> <value>
+   Valid operators: =, >, >=, <, <=, <>.
+   In values, you can use wildcards (but only
+   with the '=' and '<>' operators).
+   Valid wildcards:
+     value*    (all items beginning with 'value')
+     *value    (all items ending in 'value')
+     *value*   (all items that contain 'value')
+     val1*val2 (all items beginning with val1 and ending with val2)
+
+   Duplicate leaves, if present, are browsed as well as
+   the leaf passed as the parameter.
+
+   See also:
+   ---------
+   exactMatch, add, delete, modify
+*/
+
+method find(filter = Rexx) public returns Rexx
+ operator = Rexx
+ value = Rexx
+ ret = Rexx 0
+ ret2 = Rexx 0
+ leaf = Rexx
+ leaf2 = Rexx
+ stars = int
+ val1 = Rexx
+ val2 = Rexx
+ val3 = Rexx
+ index1 = Rexx
+ index2 = Rexx
+ tLeaf = Rexx[]
+
+temp = Rexx
+
+ parse filter operator value
+ value = value.strip
+ operator = operator.strip
+ stars = value.countstr("*")
+
+ -- **** Every case for the '=' operator ****
+ if operator = "=" then
+ do
+  if value = "*" then -- >>>> = *
+  do
+   parse findFirstLeaf "L" leaf "|N" .
+   return findRange(leaf, null, null, null)
+  end
+
+  if stars = 0 then  -- >>>> = value
+   return exactMatch(value)
+
+  if value.right(1) = "*" & stars = 1 then -- >>>> = value*
+  do
+   value = value.left(value.length - 1)
+   -- Lower bound
+   val1 = value.left(value.length() - 1) || (value.right(1).c2d() - 1).d2c()
+   val1 = val1.left(rLength, "Z")
+
+   leaf = findLeafFitting(val1)
+   parse leaf "L" leaf "|N" .
+   tLeaf = getLeaf(leaf)
+   index1 = gteItemInLeaf(tLeaf, val1)
+   if index1 = 0 then -- There are no items corresponding.
+    return ret
+
+   -- Upper bound
+   val2 = value.left(rLength, "Z")
+   leaf2 = findLeafFitting(val2)
+   parse leaf2 "L" leaf2 "|N" .
+   tLeaf = getLeaf(leaf2)
+   index2 = gteItemInLeaf(tLeaf, val2)
+
+   if index2 = 0 then -- There are no items bigger than this.
+   do
+    index2 = tLeaf[entries]
+   end
+   if tLeaf[data].substr((index2 - 1) * (rLength + 18) + 10, rLength) > val2 then -- don't get this item
+   do
+    if index1 = index2 & leaf = leaf2 then return ret
+    if index2 > 1 then index2 = index2 - 1
+    else
+    do
+     leaf2 = getPreviousLeafPointer(tLeaf)
+     if leaf2 = 0 then return ret
+     else
+     do
+      tLeaf = getLeaf(leaf2)
+      index2 = tLeaf[entries]
+     end
+    end
+   end
+   temp = findRange(leaf, index1, leaf2, index2)
+   return temp
+  end
+
+  if stars = 1 & value.left(1) = "*" then -- >>>> = *value
+   return findAllEndingWith(value.right(value.length - 1))
+
+  if stars = 1 then -- >>>> = value1*value2
+  do
+   ret = Rexx 0
+   val3 = value
+   value = value.left(value.lastpos("*") - 1)
+   -- Lower bound
+   val1 = value.left(value.length() - 1) || (value.right(1).c2d() - 1).d2c()
+   val1 = val1.left(rLength, "Z")
+
+   leaf = findLeafFitting(val1)
+   parse leaf "L" leaf "|N" .
+   tLeaf = getLeaf(leaf)
+   index1 = gteItemInLeaf(tLeaf, val1)
+
+   if index1 = 0 then -- There are no items corresponding.
+    return ret
+
+   -- Upper bound
+   val2 = value.left(rLength, "Z")
+
+   leaf2 = findLeafFitting(val2)
+   parse leaf2 "L" leaf2 "|N" .
+   tLeaf = getLeaf(leaf2)
+   index2 = gteItemInLeaf(tLeaf, val2)
+   if index2 = 0 then -- There are no items bigger than this.
+    index2 = tLeaf[entries]
+
+   if tLeaf[data].substr((index2 - 1) * (rLength + 18) + 10, rLength) > val2 then -- don't get this item
+   do
+    if index2 > 1 then index2 = index2 - 1
+    else
+    do
+     leaf2 = getPreviousLeafPointer(tLeaf)
+     if leaf2 = 0 then return ret
+     else
+     do
+      tLeaf = getLeaf(leaf2)
+      index2 = tLeaf[entries]
+     end
+    end
+   end
+   return findEndingWithAndRange(leaf, index1, leaf2, index2, val3.right(val3.length - val3.lastpos("*")))
+  end
+
+  if stars = 2 then -- >>>> = *value*
+  do
+   parse value leaf "*" value "*" leaf2
+   if leaf \= "" | leaf2 \= "" then
+    return ret
+   return findAllContaining(value)
+  end
+ end
+ else if operator = ">=" | operator = ">" then -- >>>> >= value, > value
+ do
+  val1 = value
+  val1 = val1.left(rLength, "Z")
+
+  leaf = findLeafFitting(val1)
+  parse leaf "L" leaf "|N" .
+  tLeaf = getLeaf(leaf)
+  index1 = gteItemInLeaf(tLeaf, val1)
+
+  if index1 = 0 then return ret
+
+  if tLeaf[data].substr((index1 - 1) * (rLength + 18) + 10, rLength) = val1 & -
+     operator = ">" then -- Only strictly greater than
+  do
+   if index1 < leafEntries then index1 = index1 + 1
+   else
+   do
+    leaf = getNextLeafPointer(tLeaf)
+    if leaf = 0 then return ret
+    else
+     index1 = 1
+   end
+  end
+
+  return findRange(leaf, index1, null, null)
+ end
+ else if operator = "<=" | operator = "<" then -- >>>> <= value, < value
+ do
+  val1 = value
+  val1 = val1.left(rLength, "Z")
+
+  leaf = findLeafFitting(val1)
+  parse leaf "L" leaf "|N" .
+  tLeaf = getLeaf(leaf)
+  index1 = gteItemInLeaf(tLeaf, val1)
+
+  if index1 = 0 then return ret
+
+  if tLeaf[data].substr((index1 - 1) * (rLength + 18) + 10, rLength) > val1 | -
+     operator = "<" then -- don't get this item
+  do
+   if index1 > 1 then index1 = index1 - 1
+   else
+   do
+    leaf = getPreviousLeafPointer(tLeaf)
+    if leaf = 0 then return ret
+    else
+    do
+     tLeaf = getLeaf(leaf)
+     index1 = tLeaf[entries]
+    end
+   end
+  end
+
+  parse findFirstLeaf "L" leaf "|N" .
+  return findRange(leaf, 1, tLeaf[index], index1)
+ end
+ else if operator = "<>" then -- **** Every case for the '<>' operator ****
+ do
+  if value = "*" then -- >>>> <> *
+  return ret
+
+  if stars = 0 then  -- >>>> <> value
+  do
+   leaf = findLeafFitting(value)
+   parse leaf "L" leaf "|N" .
+   tLeaf = getLeaf(leaf)
+   index1 = isItemInLeaf(tLeaf, value)
+   if index1 = 0 then -- There's no such an item in the B+Tree
+   do
+    parse findFirstLeaf "L" leaf "|N" .
+    leaf = leaf.strip
+    return findRange(leaf, null, null, null)
+   end
+   else -- We have the unwanted item in the DB.
+   do
+    -- **** get the items before the unwanted one
+    if index1 > 1 then -- Not the first item in leaf
+    do
+     parse findFirstLeaf "L" leaf2 "|N" .
+     ret = findRange(leaf2, 1, leaf, index1 - 1)
+    end
+    else -- Unfortunately, it was the first item in leaf
+    do
+     val1 = getPreviousLeafPointer(tLeaf)
+     if val1 \= 0 then
+     do
+      tLeaf = getLeaf(val1)
+      parse findFirstLeaf "L" leaf2 "|N" .
+      ret = findRange(leaf2, 1, val1, tLeaf[entries] - 1)
+     end
+    end
+
+    -- **** get the items after the unwanted one
+    if index1 < leafEntries then -- Not the last item in leaf
+     ret2 = findRange(leaf, index1 + 1, null, null)
+    else -- Unfortunately, it was the last item in leaf
+    do
+     val1 = getNextLeafPointer(tLeaf)
+     if val1 \= 0 then
+      ret2 = findRange(val1, 1, null, null)
+    end
+
+    -- **** merge the two lists
+    if ret2[0].datatype("W") = 1 then
+     mergeLists(ret, ret2)
+   end
+  end
+
+  if stars = 1 & value.left(1) = "*" then -- >>>> <> *value
+   return findAllNotEndingWith(value.right(value.length - 1))
+
+  if stars = 2 then -- >>>> <> *value*
+  do
+   parse value leaf "*" value "*" leaf2
+   if leaf \= "" | leaf2 \= "" then
+    return ret
+   return findAllNotContaining(value)
+  end
+
+  if value.right(1) = "*" & stars = 1 then -- >>>> <> value*
+  do
+   value = value.left(value.length - 1)
+
+   -- Lower bound
+   val1 = value.left(value.length() - 1) || (value.right(1).c2d() - 1).d2c()
+   val1 = val1.left(rLength, "Z")
+
+   leaf = findLeafFitting(val1)
+   parse leaf "L" leaf "|N" .
+   tLeaf = getLeaf(leaf)
+
+   index1 = gteItemInLeaf(tLeaf, val1)
+   if index1 > 1 then -- Not the first item in leaf
+   do
+    parse findFirstLeaf "L" leaf2 "|N" .
+    ret = findRange(leaf2, 1, leaf, index1 - 1)
+   end
+   else -- Unfortunately, it was the first item in leaf
+   do
+    val1 = getPreviousLeafPointer(tLeaf)
+    if val1 \= 0 then
+    do
+     tLeaf = getLeaf(val1)
+     parse findFirstLeaf "L" leaf2 "|N" .
+     ret = findRange(leaf2, 1, val1, tLeaf[entries] - 1)
+    end
+   end
+
+   -- Upper bound
+   val2 = value.left(rLength, "Z")
+
+   leaf2 = findLeafFitting(val2)
+   parse leaf2 "L" leaf2 "|N" .
+   tLeaf = getLeaf(leaf2)
+
+   index2 = gteItemInLeaf(tLeaf, val2)
+   if tLeaf[data].substr((index2 - 1) * (rLength + 18) + 10, rLength) > val2 then -- Already fitting.
+    ret2 = findRange(leaf2, index2, null, null)
+   else
+   do
+    if index2 < leafEntries then -- Not the last item in leaf
+     ret2 = findRange(leaf2, index2 + 1, null, null)
+    else -- Unfortunately, it was the last item in leaf
+    do
+     val1 = getNextLeafPointer(tLeaf)
+     if val1 \= 0 then
+      ret2 = findRange(val1, 1, null, null)
+    end
+   end
+
+   -- Return the lists, merged.
+   if ret2[0].datatype("W") = 1 then
+    return mergeLists(ret, ret2)
+   else
+    return ret
+  end
+
+  if stars = 1 then -- >>>> <> val1*val2
+  do
+   val1 = value.lastpos("*")
+   return findNotBegAndEndWith(value.left(val1 - 1), value.right(value.length - val1))
+  end
+ end
+
+ return ret
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: mergeLists(List1, List2)
+   -------
+
+   Purpose:
+   --------
+   Merge two lists containing DB references.
+
+   Parameters:
+   -----------
+   A) List1: the list containing items with the
+             LOWER key values.
+   B) List2: the list containing items with the
+             BIGGER key values.
+
+   Returns:
+   --------
+   A Rexx array, with all of the elements.
+
+   Notes:
+   ------
+   List1 elements should always contain references
+   to LOWER key values than List2 ones.
+
+   See also:
+   ---------
+
+*/
+
+method mergeLists(list1 = Rexx, list2 = Rexx) private returns Rexx
+ if list2[0] \= 0 then
+  loop i = 1 to list2[0]
+   list1[0] = list1[0] + 1
+   list1[list1[0]] = list2[i]
+  end
+
+ return list1
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 29 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getLeaf(Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get a leaf from the leaf file node.
+
+   Parameters:
+   -----------
+   A) Leaf: A Rexx string with the actual leaf index.
+
+   Returns:
+   --------
+   A three-strings Rexx array.
+
+   Notes:
+   ------
+   If the leaf is in the cache, the disk is not accessed.
+
+   See also:
+   ---------
+   loadLeaf
+*/
+
+method getLeaf(leaf = Rexx) private returns Rexx[]
+ minage = Rexx 11
+ bFound = boolean 0
+ tempInUse = int 0
+ i = int
+
+ loop label innerloop i = 0 to clSize -- Get the leaf (in cache, if possible)
+  if cacheLeaf[i, index] = leaf then
+  do -- Found the leaf in cache
+   tempInUse = i
+   if  cacheLeaf[i, age] < 10 then
+    cacheLeaf[i, age] = cacheLeaf[i, age] + 1
+   bFound = 1
+   leave innerloop
+  end
+  else if cacheLeaf[i, age] = 0 then leave innerloop
+ end
+
+ if bFound = 0 then -- Didn't find the leaf in cache: get it from disk
+ do
+  loop label innerloop i = 0 to clSize
+   if \cacheLeaf[i, inuse] then
+    if cacheLeaf[i, age] = 0 then
+    do
+     tempInUse = i
+     leave innerloop
+    end
+    else if cacheLeaf[i, age] < minage then
+    do
+     if tempInUse \= 0 then
+      if cacheLeaf[tempInUse, age] > 1 then
+       cacheLeaf[tempInUse, age] = cacheLeaf[tempInUse, age] - 1
+     tempInUse = i
+     minage = cacheLeaf[i, age]
+    end
+    else
+     if cacheLeaf[i, age] > 1 then cacheLeaf[i, age] = cacheLeaf[i, age] - 1
+  end
+
+  cacheLeaf[tempInUse, index] = leaf
+  cacheLeaf[tempInUse, age] = 1
+  loadLeaf(cacheLeaf[tempInUse])
+ end
+
+ return cacheLeaf[tempInUse]
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Fri 03 July 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getDuplicateLeaf(Leaf)
+   -------
+
+   Purpose:
+   --------
+   Get a duplicate leaf from the leaf file node.
+
+   Parameters:
+   -----------
+   A) Leaf: A Rexx string with the actual leaf index.
+
+   Returns:
+   --------
+   A three-strings Rexx array.
+
+   Notes:
+   ------
+   If the leaf is in the cache, the disk is not accessed.
+
+   See also:
+   ---------
+   loadLeaf
+*/
+
+method getDuplicateLeaf(leaf = Rexx) private returns Rexx[]
+ minage = Rexx 11
+ bFound = boolean 0
+ tempInUse = int 0
+ i = int
+
+ loop label innerloop i = 0 to clSize -- Get the leaf (in cache, if possible)
+  if cacheLeaf[i, index] = leaf then
+  do -- Found the leaf in cache
+   tempInUse = i
+   if  cacheLeaf[i, age] < 10 then
+    cacheLeaf[i, age] = cacheLeaf[i, age] + 1
+   bFound = 1
+   leave innerloop
+  end
+  else if cacheLeaf[i, age] = 0 then leave innerloop
+ end
+
+ if bFound = 0 then -- Didn't find the leaf in cache: get it from disk
+ do
+  loop label innerloop i = 0 to clSize
+   if \cacheLeaf[i, inuse] then
+    if cacheLeaf[i, age] = 0 then
+    do
+     tempInUse = i
+     leave innerloop
+    end
+    else if cacheLeaf[i, age] < minage then
+    do
+     if tempInUse \= 0 then
+      if cacheLeaf[tempInUse, age] > 1 then
+       cacheLeaf[tempInUse, age] = cacheLeaf[tempInUse, age] - 1
+     tempInUse = i
+     minage = cacheLeaf[i, age]
+    end
+    else
+     if cacheLeaf[i, age] > 1 then cacheLeaf[i, age] = cacheLeaf[i, age] - 1
+  end
+
+  cacheLeaf[tempInUse, index] = leaf
+  cacheLeaf[tempInUse, age] = 1
+  loadDuplicateLeaf(cacheLeaf[tempInUse])
+ end
+
+ return cacheLeaf[tempInUse]
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Tue 30 June 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: getNode(Node)
+   -------
+
+   Purpose:
+   --------
+   Get a node from the node file.
+
+   Parameters:
+   -----------
+   A) Node: A Rexx string with the actual node index.
+
+   Returns:
+   --------
+   A three-strings Rexx array.
+
+   Notes:
+   ------
+   If the node is in the cache, the disk is not accessed.
+
+   See also:
+   ---------
+   loadNode
+*/
+
+method getNode(node = Rexx) private returns Rexx[]
+ minage = Rexx 11
+ bFound = boolean 0
+ tempInUse = int 0
+ i = int
+
+ loop label innerloop i = 0 to cnSize -- Get the node (in cache, if possible)
+  if cacheNode[i, index] = node then
+  do -- Found the leaf in cache
+   tempInUse = i
+   if  cacheNode[i, age] < 10 then
+    cacheNode[i, age] = cacheNode[i, age] + 1
+   bFound = 1
+   leave innerloop
+  end
+  else if cacheNode[i, age] = 0 then leave innerloop
+ end
+
+ if bFound = 0 then -- Didn't find the node in cache: get it from disk
+ do
+  loop label innerloop i = 0 to cnSize
+   if \cacheNode[i, inuse] then
+    if cacheNode[i, age] = 0 then
+    do
+     tempInUse = i
+     leave innerloop
+    end
+    else if cacheNode[i, age] < minage then
+    do
+     if tempInUse \= 0 then
+      if cacheNode[tempInUse, age] > 1 then
+       cacheNode[tempInUse, age] = cacheNode[tempInUse, age] - 1
+     tempInUse = i
+     minage = cacheNode[i, age]
+    end
+    else
+     if cacheNode[i, age] > 1 then cacheNode[i, age] = cacheNode[i, age] - 1
+  end
+
+  cacheNode[tempInUse, index] = node
+  cacheNode[tempInUse, age] = 1
+  loadNode(cacheNode[tempInUse])
+ end
+
+ return cacheNode[tempInUse]
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 01 July 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: delete(Item, Index)
+   -------
+
+   Purpose:
+   --------
+   Delete an entry in the B+Tree.
+
+   Parameters:
+   -----------
+   A) Item: A Rexx string with the item to be deleted.
+   B) Index: A Rexx string with the index of the
+             item to be deleted.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   add, find, modify
+*/
+
+method delete(item = Rexx, idx = Rexx) public returns Rexx
+ path = Rexx 0
+ leaf = Rexx
+ tdata = Rexx
+ tdata2 = Rexx
+ tLeaf = Rexx[]
+ tLeafPrev = Rexx[]
+ tLeafNext = Rexx[]
+ tNode = Rexx[]
+ tNodeNext = Rexx[]
+ tNodePrev = Rexx[]
+ prevP = Rexx
+ nextP = Rexx
+ nextDel = Rexx ""
+ bLeafChanged = boolean
+ bUpdateTree = boolean 0
+ bAppears = boolean
+ bLast = boolean
+ level = int
+ i = int
+
+ leaf = findLeafAndTrack(item, path)
+ tLeaf = getLeaf(leaf)
+
+ if isItemInLeaf(tLeaf, item) = 0 then
+ do
+  return error(3)
+ end
+
+ bLeafChanged = delLeafItem(tLeaf, item, idx)
+
+ if bLeafChanged then
+ do
+  tLeaf[inuse] = 1
+
+  if tLeaf[entries] = 0 then
+  do -- Put this leaf in the reusable leaves pool.
+   prevP = getPreviousLeafPointer(tLeaf)
+   nextP = getNextLeafPointer(tLeaf)
+
+   if prevP \= 0 & nextP \= 0 then
+   do
+    tLeafPrev = getLeaf(prevP)
+    tLeafPRev[inuse] = 1
+    tLeafNext = getLeaf(nextP)
+    setNextLeafPointer(tLeafPrev, tLeafNext[index])
+    setPreviousLeafPointer(tLeafNext, tLeafPrev[index])
+    tLeafPrev[inuse] = 0
+    saveLeaf(tLeafPrev)
+    saveLeaf(tLeafNext)
+   end
+
+   if prevP \= 0 & nextP = 0 then
+   do
+    tLeafPrev = getLeaf(prevP)
+    setNextLeafPointer(tLeafPrev, 0)
+    saveLeaf(tLeafPrev)
+   end
+
+   if prevP = 0 & nextP \= 0 then
+   do
+    tLeafNext = getLeaf(nextP)
+    setPreviousLeafPointer(tLeafNext, 0)
+    saveLeaf(tLeafNext)
+   end
+
+   setNextLeafPointer(tLeaf, freeLeaf)
+   saveLeaf(tLeaf)
+   tLeaf[inuse] = 0
+   freeLeaf = tLeaf[index]
+   if updateReusableLeaf \= "READY:" then
+    return error(1)
+
+   bUpdateTree = 1
+  end -- The leaf is now in the reusable leaves pool.
+  else
+  do
+   saveLeaf(tLeaf)
+   tLeaf[inuse] = 0
+  end
+ end -- Leaf changed: took care of that.
+
+ if bUpdateTree = 0 then
+ do
+  if path[path[0]].substr(10, 1) then
+  do
+   leaf = tLeaf[data].substr(10 + (rLength + 18) * (tLeaf[entries] - 1), rLength)
+   item = item.right(rLength)
+
+   if leaf \= item then -- Rename old item
+    renameInNodes(item, leaf)
+  end
+  return error(0)
+ end
+
+ -- We must update the nodes tree, down to top.
+ level = path[0]
+ loop label mainloop while level > 0 -- Level 1 is the root node.
+  -- init tNode to the correct node.
+  if level = 1 then
+   tNode = root
+  else
+   tNode = getNode(path[i].left(9))
+
+  prevP = getPreviousNodePointer(tNode)
+  nextP = getNextNodePointer(tNode)
+
+  -- Should we delete item from this node?
+  bAppears = path[level].substr(10, 1)
+  bLast = path[level].right(1)
+
+  if nextDel \= "" then -- there's been a merge in the last few steps
+  do
+   tdata = 0
+   loop i = 1 to tNode[entries]
+    if tNode[data].substr(10 + (rLength + 10) * (i - 1), rLength) = nextDel then
+     tdata = i
+   end
+   tNode[data] = tNode[data].left(9 + (i - 1) * (rLength + 10)) || -
+                 tNode[data].substr(10 + i * (rLength + 10), (rLength + 10) * (nodeEntries - i)) || -
+                 '|'.copies(rLength + 10) || tNode[data].right(9)
+   tNode[entries] = tNode[entries] - 1
+  end
+  else if bAppears then
+   delNodeItem(tNode, item)
+  else
+  do
+   if level = path[0] & nextP = 0 & bLast = 1 then -- inf key (only triggered at the lowest node)
+   do
+    if tNode[entries] = 1 then -- the only key is inf, and should be deleted
+    do -- but we won't delete it. Just revive a reusable leaf, and point to it.
+     tLeaf = getLeaf(freeLeaf)
+     freeLeaf = getNextLeafPointer(tLeaf)
+     if updateReusableLeaf \= "READY:" then
+      return error(1)
+     tLeaf[data] = newLeafData
+     tLeaf[entries] = 0
+     saveLeaf(tLeaf)
+     delNodeItem(tNode, inf)
+     addNodeItem(tNode, inf, "L" || tLeaf[index].right(9))
+     putNode(tNode)
+     -- Situation is now 1 node and 1 leaf. No need to do anything else: return.
+     return error(0)
+    end
+    else -- There are other keys than inf.
+    do
+     -- transfer the inf key into semi-last item,
+     -- delete old inf key, and we're done.
+     tdata = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 2) + rLength, 10)
+     delNodeItem(tNode, inf)
+     delNodeItem(tNode, tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength))
+     addNodeItem(tNode, inf, tdata)
+     putNode(tNode)
+    end
+   end
+  end
+
+  -- If we're root, check if we need to shrink the tree.
+  if tNode[index] = 1 & tNode[entries] = 2 then
+  do
+   shrinkRoot
+   return error(0)
+  end
+
+  -- Should we shrink this node? (root nodes need not apply)
+  if tNode[entries] < nodeEntries % 2 & tNode[index] \= 1 then
+  do -- yes, shrink.
+   if nextP \= 0 then
+   do -- is there a big brother node?
+    tNode[inuse] = 1
+    tNodeNext = getNode(nextP)
+    tNode[inuse] = 0
+    if tNode[entries] + tNodeNext[entries] >= nodeEntries then -- balance
+    do
+     if bLast = 1 then -- We deleted the last entry for the node.
+     do
+      balanceNodes(tNode, tNodeNext)
+      renameInNodes(item, tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength))
+     end
+     else
+     do
+      tdata = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength)
+      balanceNodes(tNode, tNodeNext)
+      tdata2 = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength)
+      renameInNodes(tdata, tdata2)
+     end
+     if root[entries] = 2 then -- Perhaps the root node has to be shrinked..
+      shrinkRoot
+     return error(0)
+    end
+    else -- Couldn't balance: merge.
+    do
+     if bLast = 0 then
+      nextDel = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength)
+     mergeToRNode(tNode, tNodeNext)
+    end
+   end
+   else
+   do -- there's a little brother node.
+    tNode[inuse] = 1
+    tNodePrev = getNode(prevP)
+    tNode[inuse] = 0
+    if tNode[entries] + tNodePrev[entries] >= nodeEntries then -- balance
+    do
+     tdata = tNodePrev[data].substr(10 + (rLength + 10) * (tNodePrev[entries] - 1), rLength)
+     balanceNodes(tNodePrev, tNode)
+     renameInNodes(tdata, tNodePrev[data].substr(10 + (rLength + 10) * (tNodePrev[entries] - 1), rLength))
+     if root[entries] = 2 then -- Perhaps the root node has to be shrinked..
+      shrinkRoot
+     return error(0)
+    end
+    else -- Couldn't balance: merge.
+    do
+     if bLast = 0 then
+      nextDel = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength)
+     tdata = tNodePrev[data].substr(10 + (rLength + 10) * (tNodePrev[entries] - 1), rLength)
+     tdata2 = tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength)
+     if bLast = 0 then
+      nextDel = tdata2
+     mergeToLNode(tNodePrev, tNode)
+     renameInNodes(tdata, tdata2)
+    end
+   end
+  end
+  else -- no, don't shrink this node.
+  do
+   putNode(tNode)
+   if bLast = 1 then
+    renameInNodes(item, tNode[data].substr(10 + (rLength + 10) * (tNode[entries] - 1), rLength))   
+
+   if root[entries] = 2 then -- Perhaps the root node has to be shrinked..
+    shrinkRoot
+
+   return error(0)
+  end
+
+  level = level - 1
+ end -- mainloop
+
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Mon 06 July 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: shrinkRoot
+   -------
+
+   Purpose:
+   --------
+   Shrinks the root node of the B+Tree.
+
+   Parameters:
+   -----------
+
+   Returns:
+   --------
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method shrinkRoot() private
+ tNode = Rexx[]
+ tNodeNext = Rexx[]
+ tNodePrev = Rexx[]
+ tdata = Rexx
+ tdata2 = Rexx
+ i = int
+
+ tNode = root
+ tdata = tNode[data].substr(10 + rLength, 10)
+ tdata2 = tNode[data].substr((10 + rLength) * 2, 10)
+
+ if tdata.left(1) = "L" then
+  return
+
+ tdata = tdata.right(9)
+ tdata2 = tdata2.right(9)
+
+ tNodePrev = getNode(tdata)
+ tNodePrev[inuse] = 1
+ tNodeNext = getNode(tdata2)
+ tNodePrev[inuse] = 0
+ if tNodePrev[entries] + tNodeNext[entries] = nodeEntries then -- shrink!
+ do
+  -- Free root node
+  delNodeItem(tNode, tNode[data].substr(10, rLength))
+  delNodeItem(tNode, tNode[data].substr(10, rLength))
+  -- Add all records from prev node.
+  loop i = 1 to tNodePrev[entries]
+   tdata =  tNodePrev[data].substr(10 + (rLength + 10) * (i - 1), rLength)
+   tdata2 =  tNodePrev[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   addNodeItem(tNode, tdata, tdata2)
+  end
+  -- Add all records from next node.
+  loop i = 1 to tNodeNext[entries]
+   tdata =  tNodeNext[data].substr(10 + (rLength + 10) * (i - 1), rLength)
+   tdata2 =  tNodeNext[data].substr(10 + (rLength + 10) * (i - 1) + rLength, 10)
+   addNodeItem(tNode, tdata, tdata2)
+  end
+  putNode(tNode)
+  -- Free both prev and next nodes.
+  tNodePrev[data] = newNodeData
+  tNodeNext[data] = newNodeData
+  setNextNodePointer(tNodePrev, tNodeNext[index])
+  setNextNodePointer(tNodeNext, freeNode)
+  putNode(tNodePrev)
+  putNode(tNodeNext)
+  freeNode = tNodePrev[index]
+  updateReusableNode
+ end
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Wed 01 July 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: modify(Item, Index, NewItem)
+   -------
+
+   Purpose:
+   --------
+   Modify an entry in the B+Tree.
+
+   Parameters:
+   -----------
+   A) Item: A Rexx string with the item to be modified.
+   B) Index: A Rexx string with the index of the
+             item to be modified.
+   C) NewItem: The new key value for Item.
+
+   Returns:
+   --------
+   An appropriate error.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+   add, find, delete
+*/
+
+method modify(item = Rexx, idx = Rexx, newitem = Rexx) public returns Rexx
+ ret = Rexx
+
+/*
+ if thereIsAlready(newitem) then
+  return error(2)
+*/
+
+ ret = delete(item, idx)
+ if ret \= "READY:" then
+  return ret
+ add(newitem, idx)
+ return error(0)
+
+
+
+/*
+   -------------------------------------
+   | Created: v1.0 -- Thu 02 July 1998 |
+   | Last modified: idem.              |
+   -------------------------------------
+
+   Method: thereIsAlready(Item)
+   -------
+
+   Purpose:
+   --------
+   Check for the presence of an entry in the B+Tree.
+
+   Parameters:
+   -----------
+   A) Item: A Rexx string with the item to be modified.
+
+   Returns:
+   --------
+   1 if present, 0 if not.
+
+   Notes:
+   ------
+
+   See also:
+   ---------
+*/
+
+method thereIsAlready(item = Rexx) public returns Rexx
+ tdata = Rexx
+ leaf = Rexx
+ tLeaf = Rexx[]
+
+ item = item.right(rLength)
+
+ -- Find the leaf where to store this item, and the node where it came from.
+ tdata = findLeafFitting(item)
+ parse tdata "L" leaf "|N" .
+
+ tLeaf = getLeaf(leaf)
+
+ if isItemInLeaf(tLeaf, item) \= 0 then
+  return 1
+ else
+  return 0
+
+
+
+method browsefreeLeaves public
+ tLeaf = Rexx[]
+ tdata = Rexx freeLeaf
+
+ say 'start: 'tdata
+ loop while tdata \= 0
+  tLeaf = getLeaf(tdata)
+  tdata = getNextLeafPointer(tLeaf).strip
+  say tLeaf[index]' ['tLeaf[entries]'] --> 'tdata
+ end
+
+
+method browsefreeNodes public
+ tNode = Rexx[]
+ tdata = Rexx freeNode
+
+ say 'start: 'tdata
+ loop while tdata \= 0
+  tNode = getNode(tdata)
+  tdata = getNextNodePointer(tNode).strip
+  say tNode[index]' ['tNode[entries]'] --> 'tdata
+ end
+
+
+method checkConsistency
+ leaf = Rexx findFirstLeaf
+ tLeaf = Rexx[]
+ lread = Rexx 0
+ curread = Rexx
+
+ parse leaf "L" leaf "|N" .
+ tLeaf = getLeaf(leaf)
+ leaf = getNextNodePointer(tLeaf)
+
+ loop while leaf \= 0
+  say 'Leaf: 'tLeaf[index]
+  loop i = 1 to tLeaf[entries]
+   curread = tLeaf[data].substr(10 + (rLength + 18) * (i - 1), rLength)
+   if curread < lread then
+    say curread' < 'lread
+   curread = lread
+  end
+  tLeaf = getLeaf(leaf)
+  leaf = getNextNodePointer(tLeaf)
+ end

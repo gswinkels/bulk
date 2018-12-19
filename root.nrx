@@ -1,0 +1,37 @@
+/**
+@author Gilbert Swinkels
+@version March 30th, 2008
+Root
+*/
+ 
+class root public
+properties private
+p=Rexx
+x0=Rexx
+x1=Rexx  
+
+method root(arg=Rexx) public
+p=arg
+
+method calculate(value=Rexx) public
+numeric digits p + 2
+err = 10 ** -p
+x0=value/2
+loop forever
+ x1=(x0*x0+value)/(2*x0)
+ if (x1-x0).abs < err then leave
+ x0=x1
+end
+return x1
+
+method main(argv=String[])
+say "test root \-"
+number= 1000*Math.random()%1
+say number
+say "precision: \-"
+pr = ask 
+sqroot= root(pr)
+result = sqroot.calculate(number)
+say result.format(10,pr)
+say (result*result).format(10,pr)
+say "end test root"

@@ -1,0 +1,108 @@
+-- This example is from the book _Java in a Nutshell_ by David Flanagan.
+-- Written by David Flanagan.  Copyright (c) 1996 O'Reilly & Associates.
+-- You may study, use, modify, and distribute this example for any purpose.
+-- This example is provided WITHOUT WARRANTY either expressed or implied.
+
+import java.net.
+
+class Client public
+    properties constant
+    DEFAULT_PORT = int 6789;
+    properties inheritable
+    socket_=Socket
+    reader_ = Thread; writer_ = Thread
+
+    -- Create the client by creating its reader and writer threads
+    -- and starting them.
+    method Client(host=String, port=int) public
+         do
+            socket_ = Socket(host, port);
+            -- Create reader and writer sockets
+            reader_ = Reader(this);
+            writer_ = Writer(this);
+            -- Give the reader a higher priority to work around
+            -- a problem with shared access to the console.
+            reader_.setPriority(6);
+            writer_.setPriority(5);
+            -- Start the threads
+            reader_.start()
+            writer_.start()
+        catch e=IOException
+            System.err.println(e)
+        end
+
+    method usage public static
+        Say "Usage: java Client <hostname> [<port>]"
+        Exit 0
+
+    method  main(args=String[]) public static
+        port = int DEFAULT_PORT;
+        s = Socket;
+
+        -- Parse the port specification
+        if ((args.length \= 1) & (args.length \= 2)) then usage()
+        if (args.length = 1) then port = DEFAULT_PORT;
+        else do
+            port = Integer.parseInt(args[1])
+        catch NumberFormatException
+            usage()
+        end
+
+        Client(args[0], port);
+
+-- This thread reads data from the server and prints it on the console
+-- As usual, the run() method does the interesting stuff.
+class Reader extends Thread
+    client_=Client
+    method Reader(c=Client) public
+        super("Client Reader");
+        this.client_ = c;
+
+    method run() public
+        in = DataInputStream
+        line = String
+        do
+            in = DataInputStream(client_.socket_.getInputStream());
+            loop forever
+                line = in.readLine();
+                if line = '.' then do
+                    Say "Server closed connection."
+                    leave
+                end
+                Say line
+            end
+        catch e=IOException
+            Say "Reader: "e
+        finally
+            do
+               if (in \= null) then in.close()
+            catch IOException
+            end
+            Exit 0
+        endh
+
+-- This thread reads user input from the console and sends it to the server.
+class Writer extends Thread
+    client_=Client
+    method Writer(c=Client) public
+        super("Client Writer");
+        client_ = c;
+
+    method run public
+        in = DataInputStream
+        out = PrintStream
+        do
+            line= String
+            in = DataInputStream(System.in);
+            out = PrintStream(client_.socket_.getOutputStream());
+            loop forever
+                line = in.readLine();
+                if (line = null) then leave
+                out.println(line);
+            end
+        catch e=IOException
+            System.err.println("Writer: "e)
+        finally
+            if (out \= null) then out.close()
+            Exit 0
+        end

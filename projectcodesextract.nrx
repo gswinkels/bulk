@@ -1,0 +1,50 @@
+outline=''
+instream=FileInputStream("projectcodes.txt")
+inhandle=BufferedReader(InputStreamReader(instream))
+say 'Processing' 
+flag = "OFF"
+loop linenum=1 by 1
+ line=Rexx inhandle.readLine
+ if line=null then leave linenum
+ if line.pos('Project ID') <> 0 then
+    if flag = "ON" then 
+      do
+       say linenum "problem"
+       exit
+      end
+    else flag="ON"
+ if line.pos('Note:')<>0 then
+ do
+    flag= "OFF"
+    say outline
+    outline=''
+ end
+ if flag="ON" then 
+  if line <> "" then 
+    -- if line.d2x <> "A0" then
+    outline = outline || line || ';' 
+     
+end linenum
+say linenum-1 'lines read'
+
+/*
+Project ID
+
+5006280
+
+Description
+
+SG_Prime Brkg _Business Case
+
+Project Manager
+
+3610[Limacher,Julien]
+
+Start Date
+
+2010-04-15
+
+End Date
+
+2010-05-07
+*/

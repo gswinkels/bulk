@@ -1,0 +1,139 @@
+/* 
+echoes the messages that arrive on one queue to another one
+uses the JMS API (e.g. run this on JBoss MQ)
+uses another JNDI approach on the Mac
+*/
+
+import java.util.Properties
+import javax.jms.
+import javax.naming.
+
+class MessageBridge
+
+   properties indirect
+   sourceIP
+   targetIP
+   sourceQueue
+   targetQueue
+
+   properties inheritable
+   inCtx = Context
+   outCtx = Context
+
+   method MessageBridge()
+
+   /**
+    * Method bridge ...
+    */
+   method bridge()
+     do
+       -- instantiate the source queue
+       properties_in = Properties()
+       if System.getProperty('os.name') = "Mac OS X" then
+	do
+	  properties_in.put(Context.INITIAL_CONTEXT_FACTORY,"org.jnp.interfaces.NamingContextFactory")
+	  properties_in.put(Context.URL_PKG_PREFIXES, "org.jnp.interfaces")
+	  properties_in.put(Context.PROVIDER_URL, this.sourceIP.toString())
+	end
+       else do
+	  properties_in.put(Context.INITIAL_CONTEXT_FACTORY,"org.jboss.naming.HttpNamingContextFactory")
+	  properties_in.put(Context.PROVIDER_URL,String("http://"||this.sourceIP.toString()||":8080/invoker/JNDIFactory"))
+       end
+       this.inCtx = Context InitialContext(properties_in)
+       inQConnFactory = QueueConnectionFactory
+       this.inCtx.lookup("UIL2ConnectionFactory")
+       inQueue = javax.jms.Queue
+       inCtx.lookup("queue/"||this.sourceQueue.toString())
+       this.inCtx.bind("MessageBridgeIn", inQueue)
+       Runtime.getRuntime().addShutdownHook(MessageBridge.unbindOnShutdown())
+       inCon = QueueConnection inQConnFactory.createQueueConnection()
+       inSession_ = QueueSession
+       inCon.createQueueSession(0,Session.AUTO_ACKNOWLEDGE)
+       receiver_ = QueueReceiver inSession_.createReceiver(inQueue);
+       inCon.start()
+       -- instantiate the target queue
+       outQConnFactory = QueueConnectionFactory
+       outQueue = javax.jms.Queue
+       properties_out = Properties()
+       if System.getProperty('os.name') = "Mac OS X" then
+	do
+	   
+properties_out.put(Context.INITIAL_CONTEXT_FACTORY,"org.jnp.interfaces.N
+amingContextFactory")
+	  properties_out.put(Context.URL_PKG_PREFIXES, "org.jnp.interfaces")
+	  properties_out.put(Context.PROVIDER_URL, this.targetIP.toString())
+	end
+       else do
+	 
+properties_out.put(Context.INITIAL_CONTEXT_FACTORY,"org.jboss.naming.Htt
+pNamingContextFactory")
+	properties_out.put(Context.PROVIDER_URL,
+String("http://"||this.targetIP.toString()||":8080/invoker/
+JNDIFactory"))
+       end
+
+       this.outCtx = Context InitialContext(properties_out)
+       outQConnFactory = QueueConnectionFactory
+this.outCtx.lookup("UIL2ConnectionFactory")
+       outQueue = javax.jms.Queue
+outCtx.lookup("queue/"||this.targetQueue.toString())
+
+       this.outCtx.bind("MessageBridgeOut", outQueue)
+
+       outCon = QueueConnection outQConnFactory.createQueueConnection()
+       outSession_ = QueueSession
+outCon.createQueueSession(0,Session.AUTO_ACKNOWLEDGE)
+       sender_ = QueueSender outSession_.createSender(outQueue);
+
+       inCon.start()
+
+       loop forever
+         textMessage_ = TextMessage receiver_.receive()
+         say "Received: "  textMessage_.getText() "from"  
+this.sourceQueue "on" this.sourceIP
+	sender_.send(textMessage_)
+	say "Sent: " textMessage_.getText() "to" this.targetQueue "on"  
+this.targetIP
+       end       -- loop
+     catch n=NameAlreadyBoundException
+       inCtx.unbind("MessageBridgeIn")
+       say "please restart; unbound already bound names"
+       n.printStackTrace();
+       outCtx.unbind("MessageBridgeOut")
+     catch e=Exception
+       e.printStackTrace()
+     end
+
+   /**
+    * Method main instantiates an object of this class, sets the properties according to
+    * the arguments it was started with and messages the bridge method
+    * @param args is a String[]
+    */
+   method main(args=String[]) static
+     if args.length = 0 then do
+       say "use: MessageBridge sourceIP sourceQueue targetIP targetQueue"
+       exit
+     end
+     m=MessageBridge()
+     m.setSourceIP(args[0])
+     m.setSourceQueue(args[1])
+     m.setTargetIP(args[2])
+     m.setTargetQueue(args[3])
+     m.bridge()
+
+   /**
+    * This dependent class runs on a thread that is activated on VM shutdown.
+    * Its purpose is to clean up the bound names of the used queues.
+    */
+   class MessageBridge.unbindOnShutdown dependent extends Thread
+
+   /**
+    * Method run enables this dependent class to be run on a thread
+    */
+   method run()
+     do
+       parent.inCtx.unbind("MessageBridgeIn")
+       parent.outCtx.unbind("MessageBridgeOut")
+     catch javax.naming.NamingException
+     end     -- do
+     return

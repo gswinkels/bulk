@@ -1,0 +1,44 @@
+/* whois.nrx -- Simple Internet Whois Client 
+   Written by: Dennis Peterson
+   Date: Sep 19, 2000
+*/
+
+port = int 43
+
+parse arg arg1 arg2 .
+
+if arg1 = "" then do
+  System.out.PrintLn("Usage: whois [server] domain")
+  exit
+end
+else
+if arg2 = "" then do
+  server = 'whois.networksolutions.com'
+  str = Rexx(arg1).strip() || '\r\n'
+end
+else do
+  server = Rexx(arg1).strip()
+  str = Rexx(arg2).strip() || '\r\n'
+end
+
+do
+   mysocket = Socket(server, port)
+   out = PrintWriter(OutputStreamWriter(mysocket.getOutputStream()))
+   in  = BufferedReader(InputStreamReader(mysocket.getInputStream()))
+      
+   out.printLn(str)
+   out.flush()
+      
+   line = String(in.readLine())
+      
+   loop while line \= null
+      if Rexx(line).length() \= 0 then
+         System.out.PrintLn(line)
+      line = in.readLine()
+   end
+      
+   catch e = UnknownHostException
+      System.out.PrintLn('A hostname (' e.GetMessage ')')
+      System.out.PrintLn('could not be resolved to its IP address.')
+      System.out.PrintLn('Exception caught:\n' e '\nException message: \n' e.getMessage())
+end

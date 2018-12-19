@@ -1,0 +1,52 @@
+/* 	calculate pi using the Viete formula
+	expects to find class "root" in a zip file 
+      referenced in CLASSPATH. Zip but NO compress!
+*/
+import java.util.Date
+
+parse arg precision
+say "precision" precision
+say
+precision = precision + 1              -- to get the last digit right 
+numeric digits precision + 2           -- numeric digits needs to be more than precision
+err = 10 ** -precision
+sqroot = root(precision)
+a=sqroot.calculate(2)
+oldest=a
+start=Date().getTime
+loop label prompt forever
+	b=sqroot.calculate(2+a)	
+      est=oldest*b/2
+      difference=(est-oldest).abs
+	if difference < err then leave prompt
+      oldest=est
+      a=b  
+end prompt
+end=Date().getTime
+pi=4/est
+output(pi)
+say 'Done in ' (end-start)/1000 ' seconds.'
+
+method output(arg=Rexx) static
+sw = 0
+k = 0
+line = Rexx ''
+loop i = 1 to arg.length-2
+	line = line || arg.substr(i,1)
+      k = k + 1
+	if sw = 1 & k // 5 = 0 then line=line' ' 
+	if sw = 0 & k // 7 = 0 then
+		do
+			sw = 1
+			line=line' '
+                  k = 5
+		end         
+      if k // (5*5) = 0 then
+	do 
+		say line
+		line='  '
+	end
+ end    
+ if line <> '' then say line 
+
+

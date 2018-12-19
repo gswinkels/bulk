@@ -1,0 +1,105 @@
+/* Voorbeeld grafisch en alleenstaand programma
+   voor pixel gebaseerde simulaties
+   
+   Het (x,y) model wordt in een frame op het scherm getekend
+   gebruik makend van een "off-screen" beeld dat de opgebouwde grafiek bevat
+   
+   Dit voorbeeld tekent een in de tijd verlopende sinusoidale golf 
+   
+   @author Gilbert Swinkels
+   @version March 3th, 2007 14:26
+*/
+
+options binary   
+
+class DrawWave adapter extends Frame implements WindowListener
+  
+    properties constant
+    mywidth=500                                         -- pixel size x-as
+    myheight=500                                        -- pixel size y-as
+    glass=Toolkit.getDefaultToolkit.getScreenSize       -- screen geometry
+
+    properties private
+    shadow=Image                            -- where we'll build the image
+
+/* The 'main' method is called when this class is started as an application */
+    method main(s=String[]) static
+    x=DrawWave("My Wave")                         -- make a titled frame
+    x.setBounds((glass.width-mywidth)%2,-
+       (glass.height-myheight)%2,mywidth, myheight) -- move and resize
+    x.show                                          -- and make it visible
+
+/* The constructor passes the title to our superclass,
+   and requests that we be told about Window events */
+    method DrawWave(s=String)
+    super(s)
+    addWindowListener(this)
+
+/* update -- called when the display content needs updating */
+    method update(g=Graphics)
+    shadow=createImage(getSize.width, getSize.height)  -- make new image
+    d=shadow.getGraphics                         -- context for graphics
+    maxx=getSize.width-1  
+    maxy=getSize.height-1
+    pi = double 4 * Math.atan(1)
+    d.setColor(Color.black)
+    kmaxx=maxx
+    kmaxy=maxy 
+    d.fillRect(0,0,kmaxx,kmaxy)                -- set background black
+    d.setColor(Color.white)                  -- draw pixels white
+    titlebarthickness=20
+    ybegin=50
+    yeind=50
+    ybegin=ybegin+titlebarthickness
+    maxy=maxy-yeind
+    bandwidth=maxy-ybegin        -- y coordinate value will stick to this band  
+    xbegin=10                                 -- pixels free at start of x-axis
+    xeind=10                                  -- pixels free at end of x-axis
+    maxx=maxx-xbegin-xeind
+    time=System.currentTimeMillis()
+    say time
+    say "number of frames:"
+    iter=ask
+    loop f=0 to iter-1
+    d.setColor(Color.black) 
+    d.fillRect(0,0,kmaxx,kmaxy)                -- set background black
+    d.setColor(Color.white)                  -- draw pixels white
+    loop t=f to f+maxx
+      c = double t/maxx
+      y = double Math.sin(2*pi*2*c)
+      y = -y                    -- java awt coordinate system (0,0) is upper left hand
+                                -- and we would like to see it lower laft hand
+      y = double ytransform(y, -1, bandwidth)
+      y0 = double ytransform(double 0, -1, bandwidth)
+      yvalue= int Math.round(y)
+      yas= int Math.round(y0)
+      if t-f = 0 then do
+         loop yt=ybegin to maxy
+         d.fillRect(0+xbegin,yt,1,1)
+         end
+      end    
+      d.fillRect(t+xbegin-f,yvalue+ybegin,1,1)
+      d.fillRect(t+xbegin-f,yas+ybegin,1,1)
+    end t
+    paint(g)                                      -- paint to screen
+    end f
+    say (System.currentTimeMillis()-time)/iter
+    method ytransform(y=double,ymin=int,bandwidth=int) static
+    -- "static", i.e. class methods can be called as functions from within
+    -- a class: no refrerence to an objec of the class is necessary and the
+    -- method has only access to class variables 
+    y=y-ymin             -- ymin: minimum value on y-axis to be expected
+    y=y*bandwidth/2      -- scale:  max value y1 = bandwidth 
+    return y
+  
+/* paint -- called when the window needs to be redrawn, either by
+   update or when a window is uncovered */  
+   method paint(g=Graphics)
+   if shadow=null then update(g)                 -- (no image yet)
+   g.drawImage(shadow, 0, 0, this)               -- copy to screen
+
+/* windowClosing -- called when the window is closed, need this to handle
+     the end of program when window gets closed. */
+   method windowClosing(e=WindowEvent)
+   exit
+

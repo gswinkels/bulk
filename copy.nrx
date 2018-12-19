@@ -1,0 +1,50 @@
+/* file\copy.nrx
+copy file content with changes.
+Parameter: inputfile outputfile*/
+parse arg inFileName outFileName .
+if inFileName = '' | outFileName = '' then do
+say 'Usage: copy INfileName OUTfileName'
+exit 8
+end
+infile = File(inFileName) -- input object
+outfile = File(outFileName)
+source = DataInputStream(FileInputStream(infile))
+target = DataOutputStream(FileOutputStream(outfile))
+say '--------------------------------------------------------------------------'
+say 'Copy Version august 2006'
+say 'replace multiple blanks (hex 20) by tab (hex 09)'
+say 'remove EOF'
+say '--------------------------------------------------------------------------'
+say 'File name:'  inFileName
+say 'File Date:'  Date(inFile.lastModified) -- yyyy/mm/dd hh:mm:ss
+say 'File size:'  inFile.length 'bytes'
+say '--------------------------------------------------------------------------'
+lskip = 0
+loop forever
+  ch = Rexx source.readUnsignedByte()   -- read one byte
+  chx = ch.d2x -- convert to hexadecimal format
+  do label gs
+    if chx = '20' & lskip = 0 then      -- first blank
+      do
+	lskip = 1  
+	chx = '9'                         -- replace with tab
+      end
+    else
+      do
+        if chx <> '20' then lskip = 0   -- non-blank encountered
+        else leave gs                   -- skip non-first blank
+      end	
+    if chx <> '1A' then                 -- skip EOF
+      do
+	ch = chx.x2d()
+        target.writebyte(ch)
+      end	
+  end gs
+catch IOException                       -- end of file
+end
+say 'File name:'  outFileName
+say 'File size:'  outFile.length 'bytes'
+say '--------------------------------------------------------------------------'
+target.close()
+source.close()
+return

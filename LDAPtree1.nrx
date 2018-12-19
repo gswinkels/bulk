@@ -1,0 +1,91 @@
+import javax.swing.
+import netscape.ldap.
+import com.sun.java.swing.plaf.windows.
+
+class LDAPtree1 extends Frame
+
+	directory=LDAPConnection
+	rootdn=String "o=wa.gov"
+	rootnode=LDAPtreenode
+
+	method LDAPtree1(s=String)
+
+		super(s)
+
+	method init
+
+		addWindowListener(Winclose())
+		UIManager.setLookAndFeel("com.sun.java.swing.plaf.windows.WindowsLookAndFeel")
+		
+		p1 = JPanel()
+		p1.setLayout(GridLayout(2,2))
+		iplabel=JLabel("Server address:")
+		p1.add(iplabel)
+		ip=JTextField("555.555.555.555",30)
+		p1.add(ip)
+		portlabel=JLabel("Port Number:")
+		p1.add(portlabel)
+		port=JTextField("389",30)
+		p1.add(port) 
+
+		add(p1,BorderLayout.NORTH)
+
+		directory=LDAPConnection() -- create LDAP interface object
+		directory.connect(ip.getText,port.getText) -- connect to LDAP directory
+
+		tree = settree
+
+		sp = JScrollPane()
+		sp.getViewport().add(tree)
+
+		add(sp,BorderLayout.CENTER)
+		pack()
+
+
+	method main(args=String[]) public static
+
+		lt = LDAPtree1("LDAP Directory Tree")
+		
+		lt.init
+		
+		lt.setsize(500,500)
+		
+		lt.show
+
+		
+
+	method settree returns JTree signals LDAPException
+
+		rootnode = LDAPtreenode(directory.read(rootdn))
+		addchildren(rootnode)
+		return JTree(rootnode)
+
+	method addchildren(parent=LDAPtreenode) signals LDAPException
+
+		LDAPguy=LDAPEntry parent.getUserObject
+		LDAPdn=String LDAPguy.getDN
+		filter=String "(objectclass=*)"
+		result = LDAPSearchResults directory.search(LDAPdn,LDAPv2.SCOPE_ONE,filter,null,0)
+		loop while result.hasMoreElements
+			child = LDAPtreenode(result.next)
+			say child.tostring
+			addchildren(child)
+			parent.add(child)
+			end
+ 		
+
+class LDAPtree1.LDAPtreenode extends DefaultMutableTreeNode
+
+	method LDAPtreenode(o=Object)
+		super(o)
+
+	method toString() returns String
+		le = LDAPEntry this.getUserObject
+		return le.getDN
+
+
+class LDAPtree1.Winclose extends WindowAdapter
+
+	method windowClosing(e=WindowEvent)
+		System.exit(0)
+	

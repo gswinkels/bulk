@@ -1,0 +1,113 @@
+import java.io
+import java.net
+import javax.net
+import javax.net.ssl
+import java.security.cert
+
+-- This program connects to a Web server and downloads the specified URL
+-- from it.  It uses the HTTP protocol directly and can also handle HTTPS
+
+options binary   
+
+class HttpClient
+  
+
+-- The main method is called when this class is started as an application 
+    method main(s=String[]) static
+    x = URI             -- string to URI???
+    cert = X509Certificate
+    to_file=Rexx
+    say "uri:/n" ; xx=ask; x = URI(xx)
+    say "to file:/n" ; to_file=ask 
+    out = FileOutputStream(to_file)
+    protocol = x.getScheme()
+    host = x.getHost()
+    port = x.getPort()
+    path = x.getRawPath()
+    if path = "" | path.length()=0 then path = "/"   -- or
+    query = x.getRawQuery()
+    if query <> "" & query.length() > 0 then do      -- and
+	path = path + "?" + query
+	if protocol.equals("http") then do           --normal http protocol: create a normal socket
+  		if port = -1 then port = 80            --default http port
+	  	ysock = Socket(host, port)
+		end
+    	else if protocol.equals("https") then do     --for HTTPS we need to create a secure socket
+		if port = -1 then port = 443
+		factory = SSLSocketFactory.getDefault()
+		ssock = SSLSocket factory.createSocket(host, port)
+            end
+	session = ssock.getSession()  --get the server certificate 
+	cert = null
+	do
+      	cert = session.getPeerCertificates()[0]
+		catch e=SSLPeerUnverifiedException 
+			-- This means there was no certificate, or the certificate was not valid
+			say session.getPeerHost() " did not present a valid certificate"
+			exit 1
+	end
+
+	-- Print certificate details
+	say session.getPeerHost() " has presented a certificate belonging to:\t" -
+		"[" cert.getSubjectDN() "]\nThe certificate was issued by: \t[" cert.getIssuerDN() "]"	   
+	-- We could ask here whether user trusts certificate owner and issuer before proceeding...
+	ysock = ssock
+      end
+    else
+      signal IllegalArgumentException("URL must use http: or https: protocol")
+    
+    -- We now have a regular socket or an SSL socket.  HTTP and HTTPS are the same from here on.
+    -- Get input and output streams for the socket
+    
+    do
+    	from_server = ysock.getInputStream()
+    	to_server = PrintWriter(ysock.getOutputStream())
+    -- Send the HTTP GET command to the Web server, specifying the file
+    -- We specify HTTP 1.0 instead of 1.1 since we don't know how to handle Transfer-Encoding: 
+    -- chunked in the response
+    	to_server.print("GET " + path + " HTTP/1.0\r\nHost: " host "\r\nConnection: close\r\n\r\n")
+    	to_server.flush()
+    -- Here is a buffer we use for reading from the server
+    	buffer = byte[8 * 1024]
+    	int bytes_read
+
+    -- Now read the HTTP headers the server returns, and print these to the console.
+    -- Read from the server until we've got at least 4K bytes or until we get EOF.  Assume that we'll find
+    -- the end of the headers somewhere in the first 4K bytes.
+    	numbytes = int 0
+    	while true do
+		bytes_read = from_server.read(buffer, numbytes, buffer.length-numbytes)
+		if bytes_read = -1 leave
+		numbytes += bytes_read
+		if numbytes >= 4 * 1024 leave
+    	end
+
+    -- Loop through the bytes, looking for the \r\n\r\n pattern
+    -- (13, 10, 13, 10) that marks the end of the headers
+    	i = int 0
+    	while i <= numbytes-4 then do
+		if buffer[i+1] = 13 & buffer[i+2] = 10 &  buffer[i+3] = 13 & buffer[i+4] = 10 leave
+       	i=i+1
+    	end
+    -- If we didn't find the end of the headers, abort
+    	if i > numbytes-4 then signal IOException("End of headers not found in first " + numbytes + " bytes")
+	    
+    -- Now convert the headers to a Latin-1 string (omitting the final blank line) and then print them out to the console
+    	headers = String(buffer, 0, i-2, "ISO-8859-1")
+    	say headers
+
+    -- Any bytes we read after the headers get written to the file.
+    	to_file.write(buffer, i, numbytes-i)
+
+    -- Now read the rest of the bytes and write to the file
+    	while (bytes_read = from_server.read(buffer)) <> -1 do
+      	to_file.write(buffer, 0, bytes_read)
+            
+    -- When the server closes the connection, we close our stuff, too
+   	ysock.close()
+	to_file.close()
+        
+    catch e=Exception do    -- Report any errors that arise
+         say e
+         say "Usage: java HttpClient <URL> [<filename>]"
+    end

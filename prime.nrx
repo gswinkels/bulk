@@ -1,0 +1,35 @@
+parse arg max .
+j=int 0
+loop while j < max     
+  say nextprime(j) 
+  j=j+1
+end                                              
+exit 0                                                               
+-- method......: nextprime
+-- purpose.....: generate next prime
+--
+method nextprime(j=int) public static
+if j = 0 then do
+ n=int 2
+ a=int 7
+end
+g=gcd(n,a)
+n=n+1
+a=a+g
+return g
+-- method......: gcd                                               
+-- purpose.....: find the greatest common divisor                  
+--                                                                 
+method gcd(a=int,b=int) public static                              
+    if a = 0 then return b                                         
+    if b = 0 then return a                                         
+    r2 = a                                                         
+    r1 = b                                                         
+    loop forever                                                   
+      rr = r2/r1                                                   
+      g = rr.trunc()                                               
+      r = r2 - r1*g                                                
+      if r = 0 then return r1                                      
+      r2 = r1                                                      
+      r1 = r                                       
+    end         

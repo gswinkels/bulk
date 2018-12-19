@@ -1,0 +1,19 @@
+class pencilapp extends Applet
+ 
+  x =int 0 ; y =int 0 
+  
+  method mouseDrag(e=event,i=int,j=int) public returns boolean
+	getGraphics.drawLine(x,y,i,j)
+	x = i ;	y = j
+	return 1
+
+  method mouseDown(e=event,i=int,j=int) public returns boolean 
+	x = i ; y = j
+	return 1
+
+  method main(argv=String[]) public static
+	p=pencilapp()
+	f=Frame("pencil test")
+	f.resize(400,300)
+	f.add("Center",p)
+	f.show()  

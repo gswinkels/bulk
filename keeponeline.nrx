@@ -1,0 +1,54 @@
+parse arg inFileName outFileName .
+if inFileName = '' | outFileName = '' then do
+ say 'Usage: copy INfileName OUTfileName'
+ exit 8
+end
+do
+  in=File(inFileName)
+  infile = FileInputStream(in) 
+  out=File(outFileName)
+  outfile = FileOutputStream(out)
+  source = BufferedReader(InputStreamReader(infile))
+  target = BufferedWriter(OutputStreamWriter(outfile))
+  catch e=IOException
+  say '# error opening file' e.getMessage
+end
+say '--------------------------------------------------------------------------'
+say 'Remove duplicate lines Version december 2014'
+say 'Display line counts'
+say '--------------------------------------------------------------------------'
+say 'File name:'  inFileName
+say 'File Date:'  Date(in.lastModified) -- yyyy/mm/dd hh:mm:ss
+say 'File size:'  in.length 'bytes'
+say '--------------------------------------------------------------------------'
+hadline = 0
+inline = 0
+outline = 0
+loop forever 
+   line=Rexx source.readLine
+   if line=null then leave 
+   inline=inline+1
+   do label gs
+      hadline[line]=hadline[line]+1
+      if hadline[line] > 1 then 
+         do
+          print line
+          iterate --firsttime encounter means index is one
+      end    
+      if outline <> 0 then target.newline --to avoid empty line at EOF in output
+      target.write(line)
+      outline=outline+1 
+   end gs
+catch IOException --EOF
+end 
+target.close() --to avoid showing a zero byte file size
+source.close()
+say 'lines read : ' inline
+say 'File name:'  outFileName
+say 'File size:'  out.length 'bytes'
+say 'lines written: ' outline
+say '--------------------------------------------------------------------------'
+loop x over hadline
+   say x hadline[x]
+end x 
+return

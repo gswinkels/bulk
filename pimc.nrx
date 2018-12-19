@@ -1,0 +1,95 @@
+/* Monte Carlo berekening van het getal pi.
+   
+   @author Gilbert Swinkels
+   @version March 5th, 2007
+*/
+
+options binary   
+
+class pimc adapter extends Frame implements WindowListener
+  
+    properties constant
+    mywidth=500                                         -- pixel size x-as
+    myheight=500                                        -- pixel size y-as
+    glass=Toolkit.getDefaultToolkit.getScreenSize       -- screen geometry
+
+    properties private
+    shadow=Image                            -- where we'll build the image
+
+/* The 'main' method is called when this class is started as an application */
+    method main(s=String[]) static
+    x=pimc("Pi - the Monte Carlo way")                 -- make a titled frame
+    x.setBounds((glass.width-mywidth)%2,-
+       (glass.height-myheight)%2,mywidth, myheight) -- move and resize
+    x.show                                          -- and make it visible
+    
+
+/* The constructor passes the title to our superclass,
+   and requests that we be told about Window events */
+    method pimc(s=String)
+    super(s)
+    addWindowListener(this)
+
+/* update -- called when the display content needs updating */
+    method update(g=Graphics)
+    shadow=createImage(getSize.width, getSize.height)  -- make new image
+    d=shadow.getGraphics                         -- context for graphics
+    maxx=getSize.width-1  
+    maxy=getSize.height-1
+    d.setColor(Color.black)
+    d.fillRect(0,0,maxx,maxy)                -- set background black
+    titlebarthickness=20
+    ybegin=50
+    yeind=50
+    ybegin=ybegin+titlebarthickness
+    maxy=maxy-ybegin-yeind
+    xbegin=50                                 -- pixels free at start of x-axis
+    xeind=50                                  -- pixels free at end of x-axis
+    maxx=maxx-xbegin-xeind
+    d.setColor(Color.white)                  -- teken kader wit
+    loop x=-1 to maxx+1             
+      d.fillRect(x+xbegin,-1+ybegin,1,1)
+      d.fillRect(x+xbegin,maxy+ybegin+1,1,1)
+      if x = -1, x= maxx+1  then do    -- equal to xbegin OR maxx
+         loop y=-1 to maxy+1
+         d.fillRect(x+xbegin,y+ybegin,1,1)
+         end
+      end    
+    end
+    hit=int 0
+    total=int 0
+    Ox=double 0.5   -- circle centre coordinates
+    Oy=double 0.5
+    loop forever
+      total=total+1
+      a=Math.random()
+      b=Math.random()
+      if (Ox-a)*(Ox-a)+(Oy-b)*(Oy-b) <=0.25 then
+         do
+          hit=hit+1
+          d.setColor(Color.white)      
+         end
+         else d.setcolor(Color.red)
+      if hit // 100 = 0 then 
+      do
+         say 4*hit/total
+         paint(g)
+         if hit = 10000000 then leave
+      end
+      x = int Math.round(a*maxx)
+      y = int Math.round(b*maxy)
+      d.fillRect(x+xbegin,y+ybegin,1,1)      
+    end
+   
+      
+/* paint -- called when the window needs to be redrawn, either by
+   update or when a window is uncovered */  
+   method paint(g=Graphics)
+   if shadow=null then update(g)                 -- (no image yet)
+   g.drawImage(shadow, 0, 0, this)               -- copy to screen
+
+/* windowClosing -- called when the window is closed, need this to handle
+     the end of program when window gets closed. */
+   method windowClosing(e=WindowEvent)
+   exit
+

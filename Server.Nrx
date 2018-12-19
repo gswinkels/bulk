@@ -1,0 +1,197 @@
+-- This example is from the book _Java in a Nutshell_ by David Flanagan.
+-- Written by David Flanagan.  Copyright (c) 1996 O'Reilly & Associates.
+-- You may study, use, modify, and distribute this example for any purpose.
+-- This example is provided WITHOUT WARRANTY either expressed or implied.
+import java.awt.List
+
+class Server extends Thread public
+
+    properties constant
+    DEFAULT_PORT = int 6789;
+    properties inheritable
+    port = int
+    listen_socket=ServerSocket
+    threadGroup_ =ThreadGroup;
+    connection_list=List
+    connections=Vector
+    vulture_=Vulture
+
+    -- Exit with an error message, when an exception occurs.
+    method fail(e=Exception, msg=String) public static
+        System.err.println(msg": "e);
+        Exit 1
+
+    -- Create a ServerSocket to listen for connections on;  start the thread.
+    method Server(p=int) public
+        -- Create our server thread with a name.
+        super("Server");
+        if (p = 0) then p = DEFAULT_PORT;
+        this.port = p;
+        do
+            listen_socket = ServerSocket(port)
+        catch e=IOException
+            fail(e, "Exception creating server socket")
+        end
+        -- Create a threadgroup for our connections
+        threadGroup_ = ThreadGroup("Server Connections");
+
+        -- Create a window to display our connections in
+        f = Frame("Server Status");
+        connection_list = List();
+        f.add("Center", connection_list);
+        f.resize(400, 200);
+        f.show();
+
+        -- Initialize a vector to store our connections in
+        connections = Vector();
+
+        -- Create a Vulture thread to wait for other threads to die.
+        -- It starts itself automatically.
+        vulture_ = Vulture(this);
+
+        -- Start the server listening for connections
+        this.start();
+
+    -- The body of the server thread.  Loop forever, listening for and
+    -- accepting connections from clients.  For each connection,
+    -- create a Connection object to handle communication through the
+    -- new Socket.  When we create a new connection, add it to the
+    -- Vector of connections, and display it in the List.  Note that we
+    -- use synchronized to lock the Vector of connections.  The Vulture
+    -- class does the same, so the vulture won't be removing dead
+    -- connections while we're adding fresh ones.
+    method run() public
+        do
+            loop forever
+                client_socket = listen_socket.accept();
+                c = Connection(client_socket, threadgroup_, -
+                                  3, vulture_);
+                -- prevent simultaneous access.
+                do protect connections
+                    connections.addElement(c);
+                    connection_list.addItem(c.toString());
+                end
+            end
+        catch e=IOException
+            fail(e, "Exception while listening for connections")
+        end
+
+    -- Start the server up, listening on an optionally specified port
+    method main(args=String[]) public static
+        p = 0;
+        if (args.length = 1) then do
+            p = Integer.parseInt(args[0]);
+        catch e=NumberFormatException
+        end
+        Server(p);
+
+-- This class is the thread that handles all communication with a client
+-- It also notifies the Vulture when the connection is dropped.
+class Connection extends Thread
+
+    properties static
+    connection_number = 0;
+    properties inheritable
+    client=Socket
+    vulture_= Vulture;
+    in = DataInputStream
+    out = PrintStream
+
+    -- Initialize the streams and start the thread
+    method  Connection( client_socket=Socket, threadGroup_ = ThreadGroup, -
+              priority=int, v=Vulture) public
+        -- Give the thread a group, a name, and a priority.
+        super(threadGroup_, "Connection-"connection_number+1);
+        connection_number = connection_number + 1
+        this.setPriority(priority);
+        -- Save our other arguments away
+        client = client_socket;
+        this.vulture_ = v
+        -- Create the streams
+        do
+            in = DataInputStream(client.getInputStream());
+            out = PrintStream(client.getOutputStream());
+        catch e=IOException
+            do;client.close();catch IOException;end
+            System.err.println("Exception while getting socket streams: "e);
+            return;
+        end
+        -- And start the thread up
+        this.start();
+
+    -- Provide the service.
+    -- Read a line, reverse it, send it back.
+    method run() public
+        line=String
+        revLine = String
+        len=int
+
+        -- Send a welcome message to the client
+        out.println("Line Reversal Server version 1.0");
+        out.println("A service of O'Reilly & Associates");
+
+        loop forever
+            -- read in a line
+            line = in.readLine();
+            if (line = null) then leave
+            -- reverse it
+            len = line.length();
+            revline = (Rexx line).reverse().toString
+            out.println(revline);
+        catch IOException
+        -- When we're done, for whatever reason, be sure to close
+        -- the socket, and to notify the Vulture object.  Note that
+        -- we have to use synchronized first to lock the vulture
+        -- object before we can call notify() for it.
+        finally
+            do;client.close();catch IOException;end
+            do protect vulture_; vulture_.notify();end
+        end
+
+    -- This method returns the string representation of the Connection.
+    -- This is the string that will appear in the GUI List.
+    method  toString() public returns String
+        return this.getName() || " connected to: " -
+            || client.getInetAddress().getHostName() -
+            || ":"client.getPort();
+
+-- This class waits to be notified that a thread is dying (exiting)
+-- and then cleans up the list of threads and the graphical list.
+class Vulture extends Thread
+
+    server_ = Server;
+
+    method Vulture(s=Server)
+        super(s.threadgroup_, "Connection Vulture");
+        server_ = s;
+        this.start();
+
+    -- This is the method that waits for notification of exiting threads
+    -- and cleans up the lists.  It is a synchronized method, so it
+    -- acquires a lock on the `this' object before running.  This is
+    -- necessary so that it can call wait() on this.  Even if the
+    -- the Connection objects never call notify(), this method wakes up
+    -- every five seconds and checks all the connections, just in case.
+    -- Note also that all access to the Vector of connections and to
+    -- the GUI List component are within a synchronized block as well.
+    -- This prevents the Server class from adding a new conenction while
+    -- we're removing an old one.
+
+    method run() public protect
+        loop forever
+            do; this.wait(5000); catch InterruptedException; end
+            -- prevent simultaneous access
+            do protect server_.connections
+                -- loop through the connections
+                loop i = server_.connections.size()-1 to 0 by -1
+                    c = Connection server_.connections.elementAt(i);
+                    -- if the connection thread isn't alive anymore,
+                    -- remove it from the Vector and List.
+                    if \c.isAlive() then do
+                        server_.connections.removeElementAt(i);
+                        server_.connection_list.delItem(i);
+                    end
+                end
+            end
+        end
+

@@ -1,0 +1,80 @@
+/* Voorbeeld alleenstaand programma
+   voor database query
+     
+   @author Gilbert Swinkels
+   @version March 4th, 2007
+   @param database url
+   @param database user
+   @param password  
+*/
+--db.driver=com.mysql.jdbc.Driver
+--db.url=jdbc:mysql://localhost/eoc
+--db.user=gilbert
+--db.pw=Stahlgewitter
+--classpath to driver D:\Program Files\MySQL\mysql-connector-java-3.1.13\mysql-connector-java-3.1.13-bin.jar
+-- essential mysql commands
+-- mysql -ugilbert -p
+-- use eoc;
+-- show tables;
+-- describe currencies;
+
+
+import java.sql
+
+say "Usage: java MySQLQuery db.url userprefix"
+parse arg url prefix -- process arguments
+if url = ""   then url = "jdbc:mysql://localhost/eoc"
+
+do 
+ say "Loading MySQL driver classes..."
+ Class.forName("com.mysql.jdbc.Driver").newInstance()
+ catch e1 = Exception
+  say "MySQL driver class could not be found and loaded"
+  say "Exception (" e1 ") caught: \n" e1.getMessage()
+  exit 1
+end
+
+do -- connecting to MySQL host
+ say "Connecting to:"  url
+ jdbcCon = Connection DriverManager.getConnection(url,"gilbert","Stahlgewitter")
+ catch e2 = SQLException
+  say "SQLException(s) caught while connecting !"
+  loop while (e2 \= null)
+  say "SQLState:"  e2.getSQLState()
+  say "Message: "  e2.getMessage()
+  say "Vendor: "  e2.getErrorCode()
+  say
+  e2 = e2.getNextException()
+  end
+  exit 1
+end -- end : connecting to DB2 host
+
+do -- get list of currencies
+ say "Creating query..."
+ query = "SELECT * FROM currencies"  
+ stmt = Statement jdbcCon.createStatement()
+ say "Executing query:" 
+ loop i=0 to (query.length()-1)%75
+   say ""query.substr(i*75+1,75)
+ end
+ rs = ResultSet stmt.executeQuery(query)
+ say "Results:"
+ loop row=0 while rs.next()
+   say rs.getString("cur_numcode")   rs.getString("cur_isocode")   -
+   rs.getString("cur_rate")
+ end
+ rs.close() -- close the ResultSet
+ stmt.close() -- close the Statement
+ jdbcCon.close() -- close the Connection
+ say "Retrieved"  row "currencies"
+ catch e3 = SQLException
+ say "SQLException(s) caught"
+ loop while (e3 \= null)
+   say "SQLState:"  e3.getSQLState()
+   say "Message: "  e3.getMessage()
+   say "Vendor: "  e3.getErrorCode()
+   say
+   e3 = e3.getNextException()
+  end
+end 
+

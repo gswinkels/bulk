@@ -1,0 +1,22 @@
+/* linecomment.nrx -- convert appropriate block comments to line comments */
+
+  instream=FileInputStream("projectcodes.txt")
+  inhandle=BufferedReader(InputStreamReader(instream))
+  say 'Processing' 
+  loop linenum=1 by 1
+    line=Rexx inhandle.readLine           -- get next line [as Rexx string]
+    if line=null then leave linenum       -- normal end of file
+    if line.pos('Project ID') <> 0 then
+       do
+          line=Rexx inhandle.readLine  
+          line=Rexx inhandle.readLine  
+          say line
+       end  
+    if line.pos('Description')<>0 then 
+       do
+          line=Rexx inhandle.readLine
+          line=Rexx inhandle.readLine     
+          say line
+       end  
+  end linenum
+  say linenum-1 'lines read'

@@ -1,0 +1,18 @@
+/* justonetest.nrx -- test the justone function. */ 
+say justone('to be or not to be') 	/* simple testcase */ 
+exit 						
+/* This removes duplicate words from a string, and */ 
+/* shows the use of a variable (HADWORD) which is */
+/* indexed by arbitrary data (words). */ 
+
+method justone(wordlist) static 
+hadword=0 /* show all possible words as new */ 
+outlist='' /* initialize the output list */ 
+loop while wordlist\='' /* loop while we have data */
+/* split WORDLIST into first word and residue */ 
+parse wordlist word wordlist 
+if hadword[word] then iterate /* loop if had word */ 
+hadword[word]=1 /* remember we have had this word */ 
+outlist=outlist word /* add word to output list */ 
+end
+return outlist /* finally return the result */
