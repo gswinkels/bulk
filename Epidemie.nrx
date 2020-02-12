@@ -1,9 +1,12 @@
-/* epidemie                                             
-   Natuur en Techniek 3, 1993 p258-260
-
+/* Voorbeeld grafisch en alleenstaand programma voor pixel gebaseerde simulaties
+   
    Het (x,y) model wordt in een frame op het scherm getekend
    gebruik makend van een "off-screen" beeld dat de opgebouwde grafiek bevat
    
+   @author Gilbert Swinkels
+   @version Feb 6th, 2020
+   
+   Epidemie  Natuur en Techniek 3, 1993 p258-260
    geen incubatie
    p = periode dat de ziekte besmettelijk is (dagen)
    q = periode tijdelijk immuniteit, te rekenen van begin ziekte (dagen)
@@ -11,38 +14,59 @@
    v(n) = aantal vatbaren op dag n
    w(n) = totaal aantal immunen en overledenen
    z(n) = aantal nieuwe zieken op dag n
-   z(n,k) = aantal zieken op dag n die k dagen ziek zijn
-   beginvoorwaarden :  v(0)=1-e en z(0)=e met e<<1 (klein aantal zieken,iedereen vatbaar)
+   z(n,k) = aantal zieken op dag n die k dagen ziek zijn = z(n-k) want ziek geworden op dag k
+
+   beginvoorwaarden :  v(0)=1-e en z(0)=e met e<<1 (klein aantal zieken,
+                       iedereen vatbaar)
+
    relatie 1 :    z(n,k)=z(n-k)
-   relatie 2 :    van dag n tot n+1 hebben de zieken kontakt gehad met v(n) vatbaren;
-                  totaal zieken zijn z(n)+z(n-1)+z(n-2)+...+z(n-p+1)
+   relatie 2 :    van dag n tot n+1 hebben de zieken kontakt gehad met
+                  v(n) vatbaren ; totaal zieken zijn z(n)+z(n-1)+
+                  z(n-2)+...+z(n-p+1)
                   dus z(n+1)=a.v(n).(z(n)+...+z(n-p+1))/p
-   relatie 3 :    v(n+1)=v(n)-z(n)+z(n-q)
+   relatie 3 :    v(n+1)=v(n)-z(n)+z(n-q)   aantal vatbaren = zelfde als gister - degenen die gister ziek werden + degenen die immuniteit 
+                                                              kwijt zijn
 
-  
-   @author Gilbert Swinkels
-   @version March 3th, 2007 14:26
+eps = .001
+FOR i = 2 TO q
+  z(q) = 0
+NEXT i
+x = 1 - eps
+z(1) = eps
 
+FOR i = 1 TO n
+  LINE (i, 0)-(i, 1 - x), 14
+  s = 0
+  FOR j = 1 TO p
+    s = s + z(j)
+  NEXT j
+  h(1) = a * x * s / p
+  FOR k = 2 TO q
+    h(k) = z(k - 1)
+  NEXT k
+  x = x + z(q) - h(1)
+  FOR l = 1 TO q
+    z(l) = h(l)
+  NEXT l
+NEXT i
+END
 */
-
-options binary   
 
 class Epidemie adapter extends Frame implements WindowListener
   
     properties constant
-    mywidth=500                                         -- pixel size x-as
-    myheight=500                                        -- pixel size y-as
     glass=Toolkit.getDefaultToolkit.getScreenSize       -- screen geometry
-
+    mywidth=glass.width%2                               -- pixel size "box" width
+	myheight=glass.height-100                           -- pixel size "box" heigth
     properties private
-    shadow=Image                            -- where we'll build the image
-
+    shadow=Image                                        -- where we'll build the image
+    
 /* The 'main' method is called when this class is started as an application */
     method main(s=String[]) static
-    x=Epidemie("Epidemie Model")                    -- make a titled frame
+    x=Epidemie("Coronavirus")                         -- make a titled frame
     x.setBounds((glass.width-mywidth)%2,-
-       (glass.height-myheight)%2,mywidth, myheight) -- move and resize
-    x.show                                          -- and make it visible
+      (glass.height-myheight)%2,mywidth, myheight)    -- move and resize, % retains the integer part of the division
+    x.show                                            -- and make it visible
 
 /* The constructor passes the title to our superclass,
    and requests that we be told about Window events */
@@ -52,93 +76,84 @@ class Epidemie adapter extends Frame implements WindowListener
 
 /* update -- called when the display content needs updating */
     method update(g=Graphics)
-    i=int
-    j=int
-    x=double
-    s=double
-    z=double[1000]
-    h=double[1000]
+    z = double[1000]     -- z(k) number of new sick people on day k
+    h = double[1000]     -- z(k) but shifted by a day
+	     
     shadow=createImage(getSize.width, getSize.height)  -- make new image
-    d=shadow.getGraphics                         -- context for graphics
-    maxx=getSize.width-1  
-    maxy=getSize.height-1
-    d.setColor(Color.black) 
-    d.fillRect(0,0,maxx,maxy)                -- set background black
-    d.setColor(Color.white)                  -- draw pixels white
-    titlebarthickness=20
-    ybegin=50
-    yeind=50
-    ybegin=ybegin+titlebarthickness
-    maxy=maxy-yeind
-    xbegin=10                                 -- pixels free at start of x-axis
-    xeind=10                                  -- pixels free at end of x-axis
-    maxx=maxx-xbegin-xeind
-    say "aantal dagen te beschouwen (vb. verkoudheid 730) : /n"
-    n=ask
-    say "infectiviteit (vb. verkoudheid 1.22) : /n"
-    a=ask
-    say "besmettelijke periode (in dagen, vb. 7) : /n"
-    p=ask
-    say "immuniteit (dagen sinds begin ziekte, vb. 100) : /n"
-    q=ask
-    eps = 0.001
-    loop i = 2 to q
-      z[i] = 0
-    end
-    x = 1 - eps
-    z[1] = eps
-    bandwidth=1
-    loop i = 1 to n
-       -- d.drawLine((i, 0)-(i, 1 - x), 14)
-       -- d.drawLine(i,0,i, (1 - x))
-       -- getGraphics.drawLine(x,y,i,j)
-     -- y=-y   java awt coordinate system (0,0) is upper left hand
-     -- and we would like to see it lower laft hand
-      y = double ytransform(1-x, -1, bandwidth)
-      y0 = double ytransform(double 0, -1, bandwidth)
-      yvalue= int Math.round(y)
-      yas= int Math.round(y0)
-      yvalue = -yvalue
-      yas = -yas 
-      x0=i+xbegin
-         
-       d.fillRect(x0,yas,x0,yvalue)
-       s = 0
-       loop j = 1 to p
-            s = s + z[j]
-       end
-       h[1] = a * x * s / p
-       loop k = 2 TO q
+    d=shadow.getGraphics                               -- context for graphics
+    titlebarthickness=40
+    ybegin= 30                                        -- afstand in pixels tussen onderrand van "box" en x-as
+    yeind= 30 + titlebarthickness                     -- afstand in pixel tussen bovenrand van "box" en eindpunt y-as                                     
+    yband=myheight-yeind-ybegin	                      -- y coordinate value will stick to this band
+    xbegin=30                                         -- afstand in pixels tussen rand van "box" en begin x-as
+    xeind=30                                          -- afstand in pixels tussen rand van "box" en eind x-as
+    xband=mywidth-xeind-xbegin                        -- x coordinate will stick to this band
+
+
+   loop  label cycle while 1
+    
+     d.setColor(Color.black)
+     d.fillRect(0,0,mywidth,myheight)                   -- set background black
+     d.setColor(Color.white)                            -- draw pixels white
+
+-- initialize
+     say "aantal dagen te beschouwen (vb. verkoudheid 730) : \-" ; n = ask ; if n="" then n=730	
+     say "infectiviteit (vb. verkoudheid 1.22) : \-" ; a = ask; if a="" then a=1.22  
+	 say "besmettelijke periode (in dagen, vb. 7) : \-"; p = ask; if p="" then p=7
+     say "immuniteit (dagen sinds begin ziekte, vb. 100) : \-"; q = ask; if q="" then q=100
+	 loop i = 2 TO q
+        z[i] = 0.
+     end i
+     eps = 0.001                                         -- 1 out of every 1000 is sick to start with
+     x = 1.0 - eps
+     z[1] = eps
+	 loop i=1 to yband                                   -- teken y-as
+        iy = yband + yeind -i                            -- (0,0) is links boven, y-as moet op afstand = band + (afstand van rand boven)
+		d.fillRect(xbegin,int iy, 1, 1)
+		if i // math.round(double (yband/10)) = 0 then d.fillRect(xbegin,int iy, 5, 1)  --show 10% increments on x-axis
+	 end i
+	 
+-- iterate day by day
+     loop i = 1 TO n
+	   y=1-x                                        -- y is between 0 and 1, i.e. part of population that is sick
+	   ix=xbegin+ math.round(double (i * xband/n))  -- x coordinaat, n dagen te verdelen over xband
+	   iy=math.round(double (y * yband))            -- y coordinaat, y tussen 0 en 1 te verdelen over yband
+	   iy= yband + yeind - iy                       -- 0,0 coordinaat is links boven, y-coordinaat aanpassen
+	   if i//10 = 0 then say i y ix iy              -- om te volgen...
+	   d.fillRect(int ix,int iy,1,1)                -- plot the resulting pair (day, population sick)
+	   if i // 10 = 0 then d.fillRect(int ix,yband+yeind,1,3)   -- draw x-axis as we go along
+	   if i // 100 = 0 then d.fillRect(int ix,yband+yeind,1,9)  -- // operator will return the remainder from integer division
+	  
+	   -- rekenen
+       s = double 0.
+       loop j = 1 to p                              -- totaal aantal zieken vandaag over de besmettelijke periode
+           s = s + z[j]
+       end j
+       h[1] = a * x * s / p                         -- aantal zieken vandaag = contacten (vatbaren * zieken) * smetstof geproduceerd door zieken?
+       loop k = 2 to q
            h[k] = z[k - 1]
-       end
+       end k
        x = x + z[q] - h[1]
        loop l = 1 to q
-          z[l] = h[l]
-       end
-    end
-
-        
-    paint(g)                                      -- paint to screen
-
-
-    method ytransform(y=double,ymin=int,bandwidth=int) static
-    -- "static", i.e. class methods can be called as functions from within
-    -- a class: no refrerence to an objec of the class is necessary and the
-    -- method has only access to class variables 
-    y=y-ymin             -- ymin: minimum value on y-axis to be expected
-    y=y*bandwidth/2      -- scale:  max value y1 = bandwidth 
-    return y
-
+           z[l] = h[l]
+       end l 
+     end i    
     
-  
+     paint(g)                                      -- paint to screen
+     say "another simulation?"
+     yesno=ask
+     if yesno.upper() <> "Y" then leave
+    
+   end cycle
+   exit
+      
 /* paint -- called when the window needs to be redrawn, either by
-   update or when a window is uncovered */  
-   method paint(g=Graphics)
-   if shadow=null then update(g)                 -- (no image yet)
-   g.drawImage(shadow, 0, 0, this)               -- copy to screen
+    update or when a window is uncovered */  
+    method paint(g=Graphics)
+    if shadow=null then update(g)                 -- (no image yet)
+    g.drawImage(shadow, 0, 0, this)               -- copy to screen
 
 /* windowClosing -- called when the window is closed, need this to handle
      the end of program when window gets closed. */
-   method windowClosing(e=WindowEvent)
-   exit
-
+    method windowClosing(e=WindowEvent)
+    exit

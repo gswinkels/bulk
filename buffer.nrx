@@ -1,0 +1,19 @@
+import xclasses
+-- test WRITE buffer
+-- init a buffer, please
+--
+buf = byte[126]
+loop i = 1 to buf.length-1
+  buf[i] = i
+end
+-- declare the output file
+fn = 'twf.out'
+of = xfile(fn)
+-- point to the buffer space
+--
+of.buffer = buf
+-- OK, do the write
+--
+rc = of.writebuf()
+say 'Write of "'fn'" got RC:' rc'.'
+exit

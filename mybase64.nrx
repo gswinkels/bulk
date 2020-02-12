@@ -1,0 +1,171 @@
+parse arg str
+say "verbose? \n"
+verbose=ask
+x=a2m(str,verbose)
+say "input: " str
+say "to base64: " x
+y=m2a(x,verbose)
+say "from base64: " y
+
+/*
+MIME protocol (see RFC 1341 and 1342) is a mechanism by which you send binary
+files by mail. The basic idea is the following: you take a set of bytes,
+you split by chunks of 6 bits each, you build 4 new bytes and you map this
+new quantity in base 64 (2**6 = 64).
+Suppose you want to translate the string "Thi" to base 64:
+- Original string: 'Thi'
+- Translated in HEX: '54 68 69'
+- translated in BINARY: '01010100 01101000 01101001'
+- ditto (group by 6): '010101 000110 100001 101001'
+- Add '00' in front of each 6 bits: '00010101 00000110 00100001 00101001'
+- New quantities (in HEX): '15 06 21 29'
+- Convert to Base 64: 'VGhp'
+*/
+
+
+method a2m(str=Rexx, verbose=Rexx) public static   -- convert from ASCII to MIME
+log = 0
+if (verbose.upper = "YES") then log=1
+b64 = '\x00'.sequence('\X3F')
+--
+-- 'a'.sequence('f') == 'abcdef'
+-- returns a string of all characters, in ascending order of encoding,
+-- between and including \x00 and \X3F
+-- Within literal strings, characters that cannot safely or easily be
+-- represented (for example “control characters”) may be introduced using
+-- an escape sequence. An escape sequence starts with a backslash (“\”),
+-- which must then be followed immediately by one of the following:
+-- t represents a tabulation (tab) character
+-- n a new-line (line feed) character
+-- r return (carriage return) character
+-- f form-feed character
+-- " double-quote character, ' single-quote character
+-- \ backslash character
+-- - “null” character (the character whose encoding equals zero),
+--             used to indicate continuation in a say instruction
+-- 0 “null” character (the character whose encoding equals zero);
+--                     alternative to \-
+-- xhh character whose encoding is given by the two hexadecimal digits (“hh”)
+-- following the “x”. If the character encoding for the implementation requires
+-- more than two hexadecimal digits, then padded with zero digits on the left.
+-- uhhhh character whose encoding is given by four hexadecimal digits (“hhhh”)
+-- following the “u”. It is an error to use this escape if the character
+-- encoding for the implementation requires fewer than four hexadecimal digits
+--
+-- ASCII reserves the first 32 codes (numbers 0–31 decimal or 0-1F hex)
+-- for control characters: codes originally intended not to represent printable
+-- information, but rather to control devices (printers) that make use of ASCII,
+-- or to provide meta-information about data streams such as those stored
+-- on magnetic tape.
+-- following codes (hex 20 to 3F): space ! " ... = > ?, incl. 0 - 9
+--
+e64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" || -
+      "abcdefghijklmnopqrstuvwxyz" || -
+      "0123456789+/"
+out = ''
+loop while str <> ''
+  parse str bl1 +1 bl2 +1 bl3 +1 str      -- take 3 characters from input
+  bl = bl1.c2x()                          -- first character to hex
+  blen = 4                                -- we suppose there are 3 chars
+  if bl2 <> "" then bl = bl || bl2.c2x()
+  else do                                 -- if no second char
+     bl = bl || '00'
+     blen =2
+  end
+  if bl3 <> '' then bl = bl || bl3.c2x()
+  else do
+     bl = bl || '00'                      -- if no third char
+     if blen = 4 then blen=3              -- else blen is already 2
+  end
+  if log then say '3 char in hex' bl
+  bit = bl.x2b()                          -- to binary notation
+  if log then say '3 char in binary' bit
+  parse bit p1 +6 p2 +6 p3 +6 p4          -- take groups of 6 bits
+  bitn = '00'p1'00'p2'00'p3'00'p4         -- pad with zeros to the left
+  if log then say '4 chars in binary' bitn
+  bln = bitn.b2x()                        -- convert to hex
+  if log then say '4 char in hex' bln
+  parse bln bl1 +2 bl2 +2 bl3 +2 bl4      -- take 4 hex values
+  bln = bl1.x2c() || bl2.x2c() || bl3.x2c() || bl4.x2c()  -- convert to char
+  if log then say '4 char as char' bln
+  base = bln.translate(e64,b64)           -- eliminate control and upto ? char
+  if log then say 'translated' base
+  -- translate acts by searching the input table (b64) for each character in
+  -- string (bln). If the character is found (the first, leftmost, occurrence
+  -- being used if there are duplicates) then the corresponding character
+  -- in the same position in the output table (e64), is used in the result
+  -- string; otherwise the original character found in string is used.
+  -- translate tables may be of any length, including the null string.
+  -- the output table is padded with pad or truncated on the right as necessary
+  -- to be the same length as input table. The default pad is a blank.
+  if blen <> 4 then do                 -- replace "missing" char at end by =
+     app = '='.copies(4-blen)
+     base = base.substr(1, blen) || app
+     if log then say "missing char at end replaced by =" base
+  end
+  out = out||base
+  if log then say "returns" out
+end
+return out
+
+method m2a(str=Rexx, verbose=Rexx) public static
+-- Suppose you want to translate the string "VGhp" from base 64:
+-- Original string: 'VGhp'
+-- convert from Base 64
+-- Translated in HEX: '15 06 21 29'
+-- Remove 2 zeros in front of each 6 bits
+-- Reorganize bits in 3 groups of 8 (instead of 4x6)
+-- convert to character 'Thi'
+  log = 0
+  if verbose.upper="YES" then log = 1
+  b64 = '\x00'.sequence('\x3F')
+  e64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" || -
+       "abcdefghijklmnopqrstuvwxyz" || -
+       "0123456789+/"
+  out = ''
+  if log then say 'input: ' str
+  strlen=str.length
+  if strlen//4 <> 0 then do
+      say "protocol problem: string to convert must be a multiple of 4 chars"
+      exit
+  end
+  str= str.translate(b64,e64)
+  if log then say 'translated' str
+  loop i= 1 to strlen/4
+    parse str bl +4 str
+    if log then say '4 char' bl
+    parse bl b1 +1 b2 +1 b3 +1 b4 +1
+    bx1 = b1.c2x()
+    bx2 = b2.c2x()
+    bx3 = b3.c2x()
+    bx4 = b4.c2x()
+    if log then say "4 char to hex" bx1 bx2 bx3 bx4
+    bit1 = bx1.x2b()
+      if bit1.length()=4 then bit1='0000'||bit1
+    bit2 = bx2.x2b()
+      if bit2.length()=4 then bit2='0000'||bit2
+    bit3 = bx3.x2b()
+      if bit3.length()=4 then bit3='0000'||bit3
+    bit4 = bx4.x2b()
+      if bit4.length()=4 then bit4='0000'||bit4
+    bit=bit1||bit2||bit3||bit4
+    if log then say "4 hex to binary" bit
+    parse bit 3 p1 9 11 p2 17 19 p3 25 27 p4 33   -- drop the padded zeros
+    bit = p1||p2||p3||p4
+    if log then say "two upfront zeros where padded and are now removed" bit
+    parse bit h1 +8 h2 +8 h3 +8
+    if log then say "4 char to 3 char after dropping the padded zeros" h1 h2 h3
+    h1 = h1.b2x()
+    h2 = h2.b2x()
+    h3 = h3.b2x()
+    if log then say "3 char in hex" h1 h2 h3
+    new = h1.x2c()||h2.x2c()||h3.x2c()
+    if i=strlen/4 then do                     -- last 4 char
+       if b4="=" then new=new.substr(1,2)
+       if b3="=" then new=new.substr(1,1)
+    end
+    if log then say "3 char as char" new
+    out = out||new
+    say out
+   end
+ return out

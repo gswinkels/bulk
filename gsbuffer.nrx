@@ -1,0 +1,70 @@
+baf= byte[1000]    -- arrays are fixed size and need to be constructed upfront
+                   --   otherwise: null pointer exception
+help = Rexx
+input=string "Gilbert Swinkels Kerkweg"
+msglen = input.length()
+message = byte[msglen]
+input.getBytes(0, msglen, message, 0)   --input buffer created
+-- alternative as example:
+-- buf = byte[126]
+-- array needs to be declared and sized otherwise: null pointer exception
+-- loop i = 0 to buf.length-1
+--    buf[i] = buf.length-i
+-- end
+fn = 'mytwf.out'
+rc =  writebuf(fn, message)
+say 'Write of "'fn'" got RC:' rc'.'
+rc = readbuf(fn, baf)
+say 'Read of "'fn'" got RC:' rc'.'
+loop i=0 to baf.length-1
+  help = baf[i]
+  say i.format(3) help.format(4) help.d2c()
+end
+exit
+-- method......: readbuf
+-- purpose.....: read an entire file into a buffer
+--
+method readbuf(name=Rexx, buf=byte[]) static public
+rc = 0
+do
+ fd = File(name)
+ size = int fd.length()
+ off = int 0
+ fis = FileInputStream(fd)
+ in = DataInputStream(fis)
+ --  buf = byte[size]
+ oprc = in.read(buf,off,size)
+ say 'oprc' oprc
+ catch er=ioException
+ rc = 3
+ say '(readbuf) ERROR:' er'.'
+ return rc
+end
+if oprc = size
+ then rc = 0
+ else rc = 1
+ return rc
+-- method......: writebuf
+-- purpose.....: write an entire buffer onto a file
+--
+method writebuf(name=Rexx, buffer=byte[]) static public
+rc = 0
+do
+ fd = File(name)
+ size = int buffer.length
+ off = int 0
+ fos = FileOutputStream(fd)
+ out = DataoutputStream(fos)
+ out.write(buffer,off,size)
+ out.flush()
+ oprc = out.size()
+ out.close()
+ catch er=ioException
+ rc = 3
+ say '(writebuf) ERROR:' er'.'
+ return rc
+end
+if oprc = size
+ then rc = 0
+ else rc = 1
+return rc

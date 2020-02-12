@@ -1,0 +1,94 @@
+-- this tests the alogorithm on simple strings
+-- all Rexx
+-- for a complete implementation (files, codes written as short type) see LZW
+
+parse arg str
+default="TOBEORNOTTOBEORTOBEORNOT"
+If str='' Then
+  str=default
+say 'input: ' str
+compressed = compress(str)
+say compressed
+if str=default then
+do
+  cx='[84, 79, 66, 69, 79, 82, 78, 79, 84, 256, 258, 260, 265, 259, 261, 263]'
+  if cx==compressed then say 'compression ok'
+end
+decompressed = decompress(compressed)
+say 'decompressed: ' decompressed
+if decompressed=str then say 'decompression ok'
+exit
+
+method compress(input = Rexx) private static
+uncompressed = input
+dict=''
+d=''
+loop i= 0 to 255
+  z=i.d2c
+  d[i]=z
+  dict[z]=i
+  say 'i:' i 'z:' z 'd[i]:' d[i] 'dict[z]' dict[z]
+end
+dict_size=256
+res='['
+w=''
+loop i=1 to uncompressed.length
+  c=uncompressed.substr(i,1)
+  wc=w||c
+  say 'c: ' c 'wc: ' wc 'dict(wc): ' dict[wc]
+  if dict[wc] <> '' then w=wc
+  else
+    do
+      res=res||dict[w]', '
+      dict[wc]=dict_size
+      dict_size = dict_size + 1
+      w=c
+      say 'res: ' res
+    end
+end
+if w <> '' then res=res||dict[w]', '
+-- eliminate the last ', ' before returning
+return res.left(res.length-2)']'
+
+method decompress(input = Rexx) private static
+compressed = input
+say 'before translate ' compressed
+compressed=compressed.translate('','[],')
+-- if input contains one of these characters, then the corresponding
+-- (in terms of position) character from output table is taken
+-- which in this case is ''
+compressed=compressed.space
+say 'after translate' compressed
+d=''
+loop i=0 to 255
+  z=i.d2c
+  d[i]=z
+end
+dict_size=256
+parse compressed w compressed
+res=d[w]
+w=d[w]
+loop i=1 to compressed.words
+  k=compressed.word(i)
+  select
+    when k=dict_size then do
+     entry=w||w.substr(1,1)
+    end
+    when d[k] <> '' | d[k]= " " then do
+    -- allow for blank
+    -- | returns 1 if either term is true
+      entry=d[k]
+      end
+--    when k=dict_size then do !!! order of evaluation!
+--      entry=w||w.substr(1,1)
+--      end
+    otherwise
+      say "bad compressed k: "  k
+  end
+  res=res||entry
+  d[dict_size]=w||entry.substr(1,1)
+  say "d[dict_size]:" d[dict_size] "res:" res
+  dict_size = dict_size + 1
+  w=entry
+end
+return res

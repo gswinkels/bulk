@@ -1,0 +1,48 @@
+-- getest op 19/1/2019 op QueueManager.class en het werkt
+import xclasses
+parse arg action source target
+if action.upper <> "E" & action.upper <> "D" then do
+   say "usage: FileToBase64 E/D (encode/decode) source target"
+   exit
+end  
+if action.upper="E" then do
+  ye = File(source)
+  xe = DataInputStream(FileInputStream(ye))
+  outfile = xfile(target)
+  converter=xbase64("verbose")         -- initialize Base64 conversion object
+  converter.version()
+  converter.inbuf="" 
+  loop forever       -- transfer between buffers...
+                                           -- length() for Rexx vars, length for others
+     ch = Rexx xe.readUnsignedByte()        
+     converter.inbuf=converter.inbuf||ch.d2c()
+     catch IOexception
+  end  
+  say 'before a2m' converter.inbuf
+  converter.a2m()                          -- convert buffer from ASCII to Base64
+  say "after encoding" converter.outbuf
+  outfile.addline(converter.outbuf)
+  rc=outfile.write()
+  xe.close()
+  say "Write of" target "got RC" rc '.'   
+end
+if action.upper="D" then do
+  infile = xfile(source)
+  yd = File(target)
+  xd = DataOutputStream(FileOutputStream(yd))
+  converter=xbase64("non-verbose")
+  converter.version()
+  infile.read()                            
+  converter.inbuf= infile.line[1]
+  say 'before m2a' converter.inbuf
+  converter.m2a()
+  say "after decoding" converter.outbuf
+  help = converter.outbuf
+  loop forever
+      parse help ch +1 help
+      if ch.length = 0 then leave
+      xd.writebyte(ch.c2d())
+  end  
+  xd.close()   
+end
+exit  

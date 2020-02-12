@@ -1,0 +1,15 @@
+parse arg str
+x = myhash(str)
+say str " - hash:" x 
+
+
+method myhash(str=Rexx) public static
+hash_size = 1023
+t = 0                      -- zero total
+l = str.length()           -- str length
+loop while str <> ''       -- loop over all CHARS
+parse str ch +1 str        -- get one
+t = t+ch.c2d()             -- add to total
+end --
+out = (t*l)//hash_size     -- fold it to SIZE
+return out
